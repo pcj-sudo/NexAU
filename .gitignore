@@ -16,6 +16,10 @@ htmlcov/
 .mypy_cache/
 .hypothesis/
 
+# 本地构建与工具缓存（勿提交）
+build/
+**/.tool_cache/
+
 # Nx
 .nx/
 dist/

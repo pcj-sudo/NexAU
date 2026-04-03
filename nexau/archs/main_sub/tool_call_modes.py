@@ -24,8 +24,12 @@ DEFAULT_TOOL_CALL_MODE = "openai"
 def normalize_tool_call_mode(mode: str | None) -> str:
     """Normalize a tool_call_mode string and validate it."""
     normalized = (mode or DEFAULT_TOOL_CALL_MODE).lower()
+    # GitAgent2 YAML 使用的别名，语义同 Anthropic Messages API 的结构化 tool 载荷
+    if normalized == "structured":
+        normalized = "anthropic"
     if normalized not in VALID_TOOL_CALL_MODES:
         raise ValueError(
-            "tool_call_mode must be one of 'xml', 'openai', or 'anthropic'",
+            "tool_call_mode must be one of 'xml', 'openai', or 'anthropic' "
+            "(or 'structured' as an alias for 'anthropic')",
         )
     return normalized
