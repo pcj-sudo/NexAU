@@ -819,9 +819,13 @@ class Executor:
                             is_error=bool(feedback.get("is_error")),
                         )
 
+                        # micro-compact: 设置 created_at 时间戳
+                        from datetime import UTC, datetime
+
                         tool_result_message = Message(
                             role=Role.TOOL,
                             content=[tool_result_block],
+                            created_at=datetime.now(UTC),
                         )
                         messages.append(tool_result_message)
                         tool_result_messages.append(tool_result_message)
@@ -839,8 +843,12 @@ class Executor:
                 if tool_results:
                     from nexau.core.messages import TextBlock
 
+                    # micro-compact: 设置 created_at 时间戳
+                    from datetime import UTC, datetime
+
                     tool_result_feedback_message = Message(
-                        role=Role.USER, content=[TextBlock(text=f"Tool execution results:\n{tool_results}")]
+                        role=Role.USER, content=[TextBlock(text=f"Tool execution results:\n{tool_results}")],
+                        created_at=datetime.now(UTC),
                     )
                     messages.append(tool_result_feedback_message)
                     if token_trace_session is not None:
