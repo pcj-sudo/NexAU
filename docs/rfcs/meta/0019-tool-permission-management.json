@@ -1,0 +1,74 @@
+{
+  "affects": "nexau core (agent_config, executor, session storage, tool metadata)",
+  "created": "2026-04-22",
+  "priority": "P1",
+  "related": [
+    "0018"
+  ],
+  "requires": [],
+  "rfc": "0019",
+  "status": "draft",
+  "tags": [
+    "architecture",
+    "permissions",
+    "security",
+    "tool",
+    "session"
+  ],
+  "tasks": [
+    {
+      "depends_on": [],
+      "id": "T1",
+      "ref": null,
+      "status": "pending",
+      "title": "核心类型 + PermissionPolicy API"
+    },
+    {
+      "depends_on": [],
+      "id": "T2",
+      "ref": null,
+      "status": "pending",
+      "title": "PolicyStorage + pending_permissions 表"
+    },
+    {
+      "depends_on": [
+        "T1",
+        "T2"
+      ],
+      "id": "T3",
+      "ref": null,
+      "status": "pending",
+      "title": "Executor 集成 + 三态路由"
+    },
+    {
+      "depends_on": [
+        "T3"
+      ],
+      "id": "T4",
+      "ref": null,
+      "status": "pending",
+      "title": "agent.run 硬拦 + Resume 语义"
+    },
+    {
+      "depends_on": [
+        "T1"
+      ],
+      "id": "T5",
+      "ref": null,
+      "status": "pending",
+      "title": "内置 FileSystem / Bash policy"
+    },
+    {
+      "depends_on": [
+        "T4",
+        "T5"
+      ],
+      "id": "T6",
+      "ref": null,
+      "status": "pending",
+      "title": "E2E 集成测试 + 迁移清理"
+    }
+  ],
+  "title": "工具权限管理（PermissionPolicy 框架原语）",
+  "updated": "2026-04-22"
+}
