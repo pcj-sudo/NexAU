@@ -385,9 +385,33 @@ BashPermissionPolicy(
 
 **选立刻执行**：简单、低延迟、符合 Allow 的直觉语义；副作用原子性交给产品层（UI 引导用户不要混合操作）解决。
 
-### A3. 基于 Middleware 的旧方向（rejected）
+### A3. 跨 tool 的 policy list（定：per-tool dict 绑定）
 
-**方案**（旧 RFC-0019 草案、`feat/middleware-stop-agent-run` 分支、PR #480）：在 `Middleware` 上新增 `should_stop_agent_run(hook_input) -> str | None` hook，返回非 None 字符串即停掉 run，`agent.run()` 返回 `(text, meta)` 元组携带 stop reason。
+**方案**：`AgentConfig.permissions: list[PermissionPolicy]`，每个 policy 通过 `applies_to(tool) -> bool` 声明自己管哪些 tool。多个 policy 按列表顺序求值，first-decisive-wins（第一个返回非 Allow 的 policy 决定结果）。
+
+```python
+permissions=[
+    SessionWhitelistPolicy(),        # 横切所有 tool
+    FileSystemPermissionPolicy(...), # 管所有 FS 类 tool
+    BashPermissionPolicy(...),       # 管 shell tool
+]
+```
+
+**优点**：
+- 一个 policy 实例可以横切多个 tool（如 `SessionWhitelistPolicy` 管所有 tool）
+- 灵活的组合能力（policy chain 可以任意排列优先级）
+
+**不选的原因**：
+- 违反 leader 的设计原则"每种工具都会有自己的 PermissionPolicy"——per-tool 绑定更清晰
+- 多个 policy 对同一个 tool call 发表意见时，判决合并规则不直观（顺序敏感的 first-decisive-wins 还是 deny > ask > allow？不管选哪种都在增加心智负担）
+- `applies_to` 是 policy 自己声称管哪些 tool，绑定关系不在 config 里显式声明，读 config 时无法一眼看出某个 tool 被谁管
+- Session 白名单可以退化为 per-tool policy 的内部状态（通过 `on_resolve` hook），不需要独立横切 policy
+
+**选 per-tool dict**：`AgentConfig.permissions: dict[str, PermissionPolicy]`，key = tool_name，一个 tool 只有一个 policy，决策路径无歧义。Session 白名单由每个 policy 自己通过 `PolicyStorage` 维护。
+
+### A4. 基于 Middleware 的旧方向（rejected）
+
+**方案**（旧 RFC-0019 草案、`feat/middleware-stop-agent-run` 分支、PR #480）：在 `Middleware` 上新增 `should_stop_agent_run(hook_input) -> str | None` hook，返回非 None 字符串即停掉 run，`agent.run()` 返回 `(text, meta)` 元组携带 stop reason。不引入 `PermissionPolicy`，复用现有 middleware 体系。
 
 **已踩到的坑**（详见 `feat/middleware-stop-agent-run` 分支上的实验记录）：
 1. Raise 绕开正常 tool 派发路径 → orphan tool_use → LLM 幻觉
