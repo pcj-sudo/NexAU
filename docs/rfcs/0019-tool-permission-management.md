@@ -1,223 +1,256 @@
-# RFC-0019: 工具权限管理（PermissionPolicy 框架原语）
+# RFC-0019: 工具权限管理
 
 ## 摘要
 
-在 NexAU 中引入 **Tool Permission Management** 能力，作为框架层的一等公民。核心抽象：
+在 NexAU 中引入 **Tool Permission Management** 框架能力。核心设计：
 
-- **`PermissionPolicy`**：可插拔的"工具准入决策函数"，签名 `check(tool, ctx, **input_kwargs) -> PermissionDecision`
-- **`PermissionDecision` 三态**：`Allow` / `Deny(reason)` / `Ask(prompt, choices)`
-- **`AgentConfig.permissions`**：per-tool 字典（`dict[str, PermissionPolicy]`），与 `tools` / `llm_config` 并列；每种工具有自己的 policy
-- **`Ask` 是纯持久化状态机**——不依赖任何 in-memory 等待句柄（Future / asyncio.Event / callback）；tool 进程不启动、不空耗资源；会话关闭后重开可恢复未决状态
-- 框架内置 `FileSystemPermissionPolicy`、`BashPermissionPolicy`；开发者可自定义任意 policy
-
-此 RFC **取代**之前基于 `Middleware.should_stop_agent_run` 的方向（feat/middleware-stop-agent-run 分支 / PR #480），该方向因"在用户插件层暴露框架原语"的分层错位被否决，详见 §3「备选方案」。
+- **权限检查在 tool 函数内部**：tool 函数接收 `FrameworkContext`（纯数据载体，携带 allow/deny 规则），自行决定何时检查权限，通过 raise `AskPermission` / `PermissionDenied` 与框架通信
+- **默认行为 = ask**：没有任何匹配规则时，询问用户
+- **三种用户选择**：`allow`（记住并放行）/ `allow_once`（仅本次放行）/ `deny`（仅本次拒绝，下次仍会 ask）
+- **Ask 是纯持久化状态机**：不依赖 in-memory 等待句柄，tool 进程不启动、不空耗资源，会话关闭后重开可恢复
+- **Ask 状态存在 session 上**：通过 `sessions.pending_tool_calls` JSON 字段记录未决 ask 的元数据与用户决策，不依赖独立表
+- 框架附带内置 tool 的匹配 helper 函数作为参考实现；开发者自定义 tool 可直接操作 `FrameworkContext` 编写任意判断逻辑
 
 ## 动机
 
 ### 需求场景
 
-当 LLM 驱动的 agent 被允许调用 filesystem / shell / 第三方 API 时，它可能产生不可逆副作用：写坏文件、执行危险命令、消耗付费 API 配额、触发生产环境变更。真实产品（如 Claude Code）必须支持以下交互模式：
+当 LLM 驱动的 agent 调用 filesystem / shell / 第三方 API 时，可能产生不可逆副作用。真实产品（如 Claude Code）必须支持：
 
-- **自动放行**：读操作、命令白名单
+- **自动放行**：读操作、白名单命令
 - **事前确认（ask）**：写操作、未知命令、高风险 API
-- **直接禁止**：`rm -rf` 等危险命令、生产 Stripe key 等
-- **策略因工具、参数、session 状态、用户偏好而异**
+- **直接禁止**：危险命令、生产环境密钥等
+- **策略因工具类型、参数、session 状态而异**
 
-目前 NexAU 的 `AgentConfig` 里没有任何跟"准入"相关的抽象。这使得嵌入 NexAU 的产品（如 North Coder）必须在业务层自己搭一套权限系统，重复造轮子且无法复用框架侧的 tool metadata。
+### 设计原则
 
-### 为什么不能用 Middleware 做
+1. **每种工具有自己的权限逻辑**：tool 作者最了解自己工具的语义（哪些参数危险、哪些操作安全），权限判断应在 tool 函数内部完成
+2. **权限检查先于一切**：tool 函数必须在入口处（任何资源分配、网络连接、子进程启动之前）完成权限检查。如果 raise `AskPermission`，此时 tool 尚未占用任何资源，不存在清理问题
+3. **默认安全**：没有规则 = 问人。不是"没有规则 = 放行"
+4. **Ask 不占资源**：ask 期间不挂着 tool 进程，会话关闭重开能恢复
+5. **框架提供机制，tool 决定策略**：框架负责 allow/deny 规则存储、Ask 状态持久化、resume 流程；tool 负责何时检查权限、用什么粒度匹配、传什么 `permission_key`
 
-我们最初尝试通过 `Middleware.should_stop_agent_run(hook_input) -> str | None` 在中间件层实现（参见 PR #480、`feat/middleware-stop-agent-run` 分支），实践中踩到三条不可调和的问题：
+### CC（Claude Code）的参考模型
 
-**1. 抽象层错位**。Middleware 是开发者的扩展点，其数据类型（`BeforeToolHookInput` 等）不是框架原语。但"停掉 run"这件事要求框架新增 `STOPPED_BY_MIDDLEWARE` `StopReason`、让 `agent.run()` 的返回值形态改变（`str | tuple[str, dict]`）——框架开始理解并依赖 middleware 返回值的语义。等于把一个 plugin return value 偷偷升格为 framework primitive。
+CC 的权限模型可以概括为三句话：
+1. 默认 ask（没有规则命中就问用户）
+2. allow / deny list 做例外
+3. mode 是例外的批量快捷方式（如 acceptEdits = 对写类 tool 批量加 allow）
 
-**2. 只能 stop，不能 ask**。Middleware 返回字符串只能表达"停掉本次 run"。CC 的 `allow / deny / ask` 交互模型需要真正的挂起 + 恢复原语，middleware 做不到。硬做的结果是"每次 ask 都要起新的 `agent.run()`"，对话历史里会堆积 orphan tool_use，LLM 出现幻觉（实际踩过，参见 `feat/middleware-stop-agent-run` 分支的 E2E 复盘）。
-
-**3. 不能 per-tool 绑定策略**。Middleware 是全局的，要在 `__call__` 里自己做 tool_name 分派。同一个 tool 在不同 agent 下挂不同策略、或同一个 agent 的多个策略链式组合，middleware 模型都难以自然表达。
-
-### 分层原则
-
-Permission 是一等公民，应和 `tools=[...]`、`system_prompt`、`llm_config` 并列，挂在 `AgentConfig.permissions` 上。它是**工具准入策略**——跟"工具实现"（由 Tool 作者决定）和"工具观测"（由 Middleware 负责）是三件独立的事。
-
-| 职责 | 抽象 | 回答的问题 |
-|------|------|-----------|
-| 工具实现 | `Tool` | 怎么执行 |
-| 工具准入 | `PermissionPolicy`（本 RFC） | 能不能执行 / 要不要问人 |
-| 工具观测 | `Middleware` | 执行前后做些切面工作（日志、指标、history 改写） |
+本 RFC 的核心机制与 CC 一致（默认 ask + allow/deny 规则），但实现方式不同：CC 是 CLI 工具，ask 时同步阻塞终端等用户输入；NexAU 是框架，ask 通过 DB 持久化 + 停 run + resume 实现，支持 Web/桌面等异步场景。
 
 ## 设计
 
-### 核心类型
+### FrameworkContext（纯数据载体）
 
-#### PermissionPolicy
+`FrameworkContext` 只携带规则数据，不包含匹配逻辑。tool 函数读取其中的规则自行判断，通过 raise `AskPermission` / `PermissionDenied` 与框架通信。
 
-```
-class PermissionPolicy(Protocol):
-    def check(
-        self,
-        tool: Tool,
-        ctx: PolicyContext,
-        **input_kwargs: Any,
-    ) -> PermissionDecision: ...
-```
-
-- `check(tool, ctx, **input_kwargs)`：决策函数。`tool` 是被调用的工具对象，`input_kwargs` 是 LLM 本次 tool call 的参数（与 tool schema 对应）。返回三态之一。
-- `ctx: PolicyContext`：见下。
-- 不需要 `applies_to` 方法——policy 与 tool 的绑定关系在 `AgentConfig.permissions` 字典中**显式声明**（见下），不由 policy 自行声称。
-
-带状态的 policy（如"session 内已被用户 allow 的调用参数记忆"）自行管理状态并**自行负责持久化**（框架提供持久化 helper，见 §3.6）。Ask 被用户 resolve 为 `allow_session` 时，框架会回调 `policy.on_resolve(ctx, decision, metadata)`（可选 hook），policy 可据此更新自己的内部状态（如 session 白名单），使后续同参数调用直接返回 Allow。
-
-#### PermissionDecision
-
-```
-@dataclass(frozen=True)
-class Allow:
-    """允许工具直接派发。"""
-
-@dataclass(frozen=True)
-class Deny:
-    reason: str | None = None       # 给 LLM 看的拒绝原因（写进 ToolResult），None 时框架用默认文案
-    user_reason: str | None = None  # 给用户看的（可选，UI 展示）
-
-@dataclass(frozen=True)
-class Ask:
-    prompt: str                                  # 给用户看的问题描述
-    suggested_choices: list[AskChoice] = field(...)  # 建议的选项按钮
-
-@dataclass(frozen=True)
-class AskChoice:
-    label: str       # UI 按钮文字: "Allow once" / "Allow for session" / ...
-    kind: Literal["allow_once", "allow_session", "deny"]
-    metadata: dict = field(default_factory=dict)  # policy 自定义 payload
-
-PermissionDecision = Allow | Deny | Ask
-```
-
-**注意**：`PermissionDecision` **不支持改写 tool args**。如果开发者想"允许但限定范围"（例如允许 `read_file` 但只读 `/workspace/**`），应在 policy 判断前 deny，让 LLM 重新生成参数；或用 middleware 改参数后再让 policy pass。职责分层：policy 只做**是/否/问人**，不做参数改写。
-
-#### AgentConfig.permissions
-
-```
-AgentConfig(
-    ...,
-    permissions: dict[str, PermissionPolicy] | None = None,
-    # key = tool_name, value = 该工具的 PermissionPolicy
-)
-```
-
-- 可选字段，`None` 等价空字典，即"全部 tool 默认 Allow"（保持向后兼容，现有 agent 不受影响）。
-- **每种工具对应一个 policy**：key 是 `tool.name`，value 是该工具的决策函数。没有出现在字典中的 tool → 默认 Allow。
-- 不存在"多个 policy 对同一个 tool 发表意见"的情况——一个 tool 只有一个 policy，决策路径清晰无歧义。
-
-示例：
-
-```
-AgentConfig(
-    name="code_agent",
-    tools=[read_file_tool, write_file_tool, bash_tool],
-    permissions={
-        "read_file": FileSystemPermissionPolicy(
-            readonly_allowed_paths=["/workspace"],
-        ),
-        "write_file": FileSystemPermissionPolicy(
-            ask_on_write=True,
-            forbidden_paths=[".env", "~/.ssh/**"],
-        ),
-        "run_shell_command": BashPermissionPolicy(
-            safe={"ls", "cat", "grep", "pwd"},
-            forbidden={"rm", "dd", "mkfs"},
-        ),
-    },
-)
-```
-
-**注意**：同一个 `PermissionPolicy` 类可以用不同配置实例化后分别绑定不同 tool（如上例中 `read_file` 和 `write_file` 都用 `FileSystemPermissionPolicy`，但配置不同）。这既是 per-tool 绑定，又复用了 policy 实现。
-
-#### PolicyContext
-
-```
+```python
 @dataclass
-class PolicyContext:
+class FrameworkContext:
     session_id: str
-    agent_state: AgentState      # 只读引用, policy 可读 history 等
-    tool_call_id: str
-    turn_id: str                 # 本 turn 的 batch id (见 §3.4)
-    storage: PolicyStorage       # 持久化 helper
+    tool_name: str
+    allow_rules: list[str]    # 已持久化的 allow 规则
+    deny_rules: list[str]     # 已持久化的 deny 规则
 ```
 
-Policy 需要跨 turn 记忆（如 session 内已允许的命令/路径）时，通过 `ctx.storage` 读写；`PolicyStorage` 封装 SQLite 键值存储，键空间按 `(session_id, policy_instance_id)` 隔离（`policy_instance_id` 默认为 `f"{tool_name}:{policy.__class__.__name__}"`，保证同类 policy 绑不同 tool 时各自独立存储）。
+Executor 在每次 tool call 前构造 `FrameworkContext`：
+1. 从 DB 读取该 session + tool_name 的所有规则（tool YAML 配置的初始规则 + 用户 allow 决策积累的）
+2. 装入 `FrameworkContext`，传给 tool 函数
 
-### 执行流程
+### Tool 函数集成
 
-Executor 在 **tool 派发前**，对每个 tool call 按 `tool_name` 查 `permissions` 字典，找到绑定的 policy（没有则默认 Allow），调用 `policy.check()` 得到决策，根据决策路由：
+tool 函数签名新增 `ctx: FrameworkContext` 参数，在入口处完成权限检查。内置 tool 使用框架附带的 helper 函数：
 
-```
-[LLM 返回 tool_calls: T1, T2, T3]
-          ↓
-  [对每个 Ti: 查 permissions[Ti.tool_name] → policy.check() → decision_i]
-          ↓
-┌─────────┼────────────────────────┐
-│         │                        │
-Allow   Deny                     Ask
-│         │                        │
-立即       立即                   写 pending_permissions 记录,
-派发       写 denial                run 结束, 不派发
-tool    ToolResult
-│         │
-└────┬────┘
-     ↓
-继续 LLM loop
-(其他 tool 的结果都在 history 中)
+```python
+from nexau.archs.permissions import check_shell_permission
+
+def run_shell_command(command: str, ctx: FrameworkContext) -> str:
+    # 入口处检查权限，在任何资源分配之前
+    check_shell_permission(ctx, command)
+    # 通过后才执行实际操作
+    return subprocess.run(command, ...).stdout
 ```
 
-### 同 turn 内混合决策策略
+#### 内置 tool 的匹配 helper（参考实现）
 
-一个 turn 内 LLM 可能同时发起 `[T1, T2, T3]`（分别绑定不同的 policy）。各自 policy 判决出 `[Allow, Ask, Deny]` 时：
+框架附带以下 helper 函数，封装了"匹配规则 + raise 异常"的常见模式。开发者可以直接使用，也可以参考其实现编写自己的判断逻辑：
 
-- **T1（Allow）**：立即派发并写 ToolResult
-- **T3（Deny）**：立即写 denial ToolResult（`is_error=True`，content 为 policy 给出的 reason）
-- **T2（Ask）**：写 `pending_permissions` 记录（`decision=NULL`）
+- **`check_permission(ctx, permission_key, prompt)`**：通用三态检查。对 `permission_key` 与 allow/deny rules 做精确匹配：命中 allow → 返回、命中 deny → raise `PermissionDenied`、无命中 → raise `AskPermission`。适用于自定义 tool
+- **`check_path_permission(ctx, path)`**：路径专用。使用 `pathspec` 库（gitignore 语义）做模式匹配，三态行为同上。供 read_file / write_file / edit_file 使用
+- **`check_shell_permission(ctx, command)`**：命令专用。使用 `shlex` 解析出首词做精确匹配，三态行为同上。供 run_shell_command 使用
 
-其它未决（也触发 Ask 的）tool call **独立入库**，每条一条 pending 记录，共享同一个 `turn_id`。
+#### 开发者自定义 tool 的灵活度
 
-这样的取舍：
+开发者的 tool 函数自行决定何时调用 `check_permission`。权限检查必须在函数入口处、任何实际操作（网络请求、资源分配等）之前完成：
 
-- **优点**：简单、低延迟。Allow 类副作用立即发生，符合用户对"已批准工具"的预期；LLM 收到部分结果后可决定是否需要等 Ask 解析；无需复杂状态机管理 "半执行 turn"。
-- **缺点**：turn 不是原子的。若用户 deny 了 T2 后又想整个 turn 重来，T1 的副作用（写文件、发邮件等）已回不去。
-- **备选方案**：全 turn 冻结，见 §3「备选方案 A2」。
+```python
+def check_permission(ctx: FrameworkContext, permission_key: str, prompt: str) -> None:
+    """通用三态检查（参考实现）。"""
+    if permission_key in ctx.deny_rules:
+        raise PermissionDenied(reason=f"{permission_key} 被禁止")
+    if permission_key not in ctx.allow_rules:
+        raise AskPermission(prompt=prompt, permission_key=permission_key)
 
-### Ask 的持久化状态机
+def stripe_api(action: str, api_key: str, amount: int, ctx: FrameworkContext) -> str:
+    # 读操作: 安全操作，不需要权限检查
+    if action in ("list", "retrieve"):
+        return call_stripe(action, api_key)
 
-**核心约束**：
-1. Ask 期间 tool 进程**不启动**、executor **不 block**、不留任何 in-memory 等待句柄
-2. Session 关闭重开后**可恢复**未决 ask
+    # 测试环境: 非生产，不需要权限检查
+    if api_key.startswith("sk_test_"):
+        return call_stripe(action, api_key, amount)
 
-这两条约束联合作用下，Ask 只能是**纯持久化的状态转换**：
-
-```
-[LLM emit tool_call] → [policy → Ask]
-       ↓
-[executor 写 pending_permissions 记录 (decision=NULL)]
-       ↓
-[agent.run() 干净返回 status=paused_for_permissions]
-       ↓
-   ... 人类关窗、重启进程、第二天再登录 ...
-       ↓
-[UI 从 DB 读 pending, 展示 ask 面板 (一条条 card)]
-       ↓
-[用户点 allow / deny → UI 写 decision 字段]
-       ↓
-[所有 pending 的 decision 都非 NULL 时, UI 触发 agent.run() 恢复]
-       ↓
-[executor 扫 decision: allow → 派发 tool, deny → 写 denial ToolResult]
-       ↓
-[进入正常 LLM loop]
+    # 生产 + 写操作: 先检查权限，再执行实际 API 调用
+    check_permission(
+        ctx,
+        permission_key=action,
+        prompt=f"允许在生产环境执行 {action}（金额 {amount}）吗?",
+    )
+    return call_stripe(action, api_key, amount)
 ```
 
-**关键设计点**：
-- Ask 不是"异步等待"，是"**结束 run + 可恢复**"
-- 所有状态在 DB，没有跨进程 / 跨重启的 in-memory 依赖
-- 对话 history 在 ask 发生时已包含 "assistant 消息带 tool_use"；恢复时 executor 补上对应的 tool_result 即可
+这种"读不查、测试不查、生产写才查"的逻辑，只有 tool 函数自己能表达。注意 `check_permission` 在 `call_stripe()` 之前——如果内部 raise `AskPermission`，不会有任何 API 调用发生。
+
+### Tool 配置中的权限规则（初始规则）
+
+权限检查逻辑（HOW）和 tool 函数耦合——tool 决定何时调用 `check_permission`、用什么粒度匹配。规则数据（WHAT）在 tool 的 YAML 配置中声明，和 `binding` 同级：
+
+```yaml
+tools:
+  - name: read_file
+    yaml_path: ./tools/read_file.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:read_file
+    permissions:
+      allow:
+        - "/workspace/**"
+      deny:
+        - ".env"
+        - "~/.ssh/**"
+
+  - name: run_shell_command
+    yaml_path: ./tools/run_shell_command.tool.yaml
+    binding: nexau.archs.tool.builtin.shell_tools:run_shell_command
+    permissions:
+      allow: ["ls", "cat", "grep", "pwd"]
+      deny: ["rm", "dd", "mkfs"]
+
+  # 也支持指向外部文件
+  - name: stripe_api
+    yaml_path: ./tools/stripe_api.tool.yaml
+    binding: app.tools.stripe:stripe_api
+    permissions: ./permissions/stripe.yaml
+
+  # 没有 permissions 字段 → 默认 allow: ["**"], deny: []（向后兼容）
+  - name: write_file
+    yaml_path: ./tools/write_file.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:write_file
+```
+
+- **无 `permissions` 字段**（默认）= 等价于 `allow: ["**"], deny: []`，所有调用自动放行，行为与当前一致（向后兼容）
+- **`permissions` 有值但 allow/deny 为空** = 权限检查激活但无初始规则，所有调用默认 ask
+- 初始规则在 session 创建时写入 DB 作为基线，用户在 session 中的 allow 决策在此基础上**追加**
+- 同一个 tool 在不同 agent 的 YAML 配置中可以声明不同的 allow/deny 规则
+
+### 匹配粒度由 tool 决定
+
+tool 函数自行决定以什么粒度匹配规则、raise `AskPermission` 时传什么 `permission_key`，这决定了用户 allow 的记忆粒度：
+
+```python
+# 首词匹配（宽松）— 内置 shell helper 的做法
+head = shlex.split(command)[0]     # permission_key = "npm"
+
+# 全路径匹配（精确）— 内置 filesystem helper 的做法
+path = resolve(path)               # permission_key = "/workspace/src/main.py"
+
+# 自定义维度 — 开发者自己的 tool
+action = "charge"                  # permission_key = "charge"
+```
+
+用户 allow 的记忆粒度与 `permission_key` 一致——allow 的是这个 key，不是整个 tool。
+
+#### `"**"` 通配符约定
+
+所有 tool 的权限检查逻辑统一约定：如果 `allow_rules` 中包含 `"**"`，则**无条件放行**，跳过后续匹配。这不作为代码强制，而是 tool 实现和 helper 函数共同遵循的约定。
+
+这一约定使得向后兼容自然成立——无 `permissions` 字段的 tool 默认 `allow: ["**"]`，`check_permission` 和各 helper 看到 `"**"` 直接返回，行为等价于无权限检查。
+
+### Ask 机制
+
+#### 触发
+
+tool 函数（或 helper）在匹配不到 allow/deny 规则时 raise `AskPermission`：
+
+```python
+raise AskPermission(
+    prompt="允许执行 npm install 吗?",
+    permission_key="npm",    # 用户 allow 时持久化的 key
+)
+```
+
+`AskPermission` 携带 `prompt`（展示给用户的描述）和 `permission_key`（用于写 allow 规则）。`tool_call_id` / `tool_name` 由 executor 从调用上下文补充，tool 函数不需要感知。
+
+选项固定为三种：`allow`（记住并放行）/ `allow_once`（仅本次放行）/ `deny`（仅本次拒绝），由框架统一提供，tool 函数不需要指定。
+
+#### Executor 处理
+
+**并行安全**：同 turn 内多条 tool_call 并行执行时，executor 必须在每条 tool call 外层独立 catch 异常，将结果收集为普通返回值后统一处理，避免 `asyncio.gather` 默认行为下第一个异常吞掉其余异常：
+
+```python
+async def _execute_one(self, tool_call, ctx) -> ToolOutcome:
+    try:
+        result = await tool_fn(**args, ctx=ctx)
+        return AllowOutcome(tool_call_id=..., result=result)
+    except PermissionDenied as e:
+        return DenyOutcome(tool_call_id=..., reason=e.reason)
+    except AskPermission as e:
+        return AskOutcome(tool_call_id=..., prompt=e.prompt, permission_key=e.permission_key)
+
+outcomes = await asyncio.gather(*[self._execute_one(tc, ctx) for tc in tool_calls])
+```
+
+统一处理阶段：
+
+```
+outcomes 逐条处理：
+  ├─ AllowOutcome  → 写 ToolResult
+  ├─ DenyOutcome   → 写 denial ToolResult（is_error=True）
+  └─ AskOutcome    → 写入 session.pending_tool_calls，不写 ToolResult
+
+所有 outcome 处理完毕后：
+  ├─ 无 Ask → 继续 LLM loop
+  └─ 有 Ask → agent.run() 干净返回 status=paused_for_permissions
+```
+
+**注意**：Ask 的 tool_call 不写 ToolResult，history 停在 orphan tool_use 状态。同 turn 内其余 Allow/Deny 的 tool_call 已有 ToolResult，不受影响。这是安全的，因为 session 进入 `awaiting_permission` 状态，硬拦保证 LLM 不会看到不完整的 history。
+
+#### 用户决策与 Resume
+
+用户看到 ask 面板后做出选择：
+
+| 选择 | 框架行为 | 持久化 |
+|------|---------|--------|
+| **allow** | 写 allow 规则到 DB，re-call tool 函数（这次匹配命中 allow → 放行） | 是，后续同参数调用自动放行 |
+| **allow_once** | 将 `permission_key` 临时加入 ctx 的 `allow_rules`（不写 DB），re-call tool 函数（匹配命中 → 放行） | 否，下次还会 ask |
+| **deny** | 不 re-call tool，直接合成 denial ToolResult | 否，下次还会 ask（对齐 CC） |
+
+**deny 不持久化**（对齐 CC）：用户点 deny 只拒绝这一次调用，不往 `permission_rules` 表写规则。下次 LLM 再发起相同调用，tool 函数仍然匹配不到规则，走到 ask。这给了用户随时改变主意的机会——deny 不是"封杀"，只是"这次不要"。
+
+Resume 后 executor 写 ToolResult（真实结果或 denial），orphan tool_use 闭合，继续 LLM loop。
+
+**一个 tool_use 永远只对应一条 ToolResult**，不管走 ask → allow 还是直接放行。
+
+### 同 turn 内混合决策
+
+一个 turn 内 LLM 同时发起 `[T1, T2, T3]`，各自 tool 函数的权限检查判决出 `[Allow, Ask, Deny]` 时：
+
+- **T1（Allow）**：立即执行，写 ToolResult
+- **T3（Deny）**：立即写 denial ToolResult（`is_error=True`）
+- **T2（Ask）**：写入 `session.pending_tool_calls`，run 结束
+
+已执行的 Allow/Deny 结果留在 history。只有 Ask 的 tool_call 悬挂为 orphan。
+
+**备选方案**：全 turn 冻结，见「备选方案 A2」。
 
 ### Session 状态机与 agent.run() 硬拦
 
@@ -229,237 +262,211 @@ idle                ← 可以起新 run
   ↓ agent.run() 开始
 running             ← 正在跑 LLM loop, UI 输入框 disable
   │
-  ↓ 遇到 Ask, 写 pending, run 结束
-awaiting_permission ← 有未决 pending, UI 输入框 disable + 展示 ask 面板
+  ↓ 遇到 Ask, 写入 session.pending_tool_calls, run 结束
+awaiting_permission ← pending_tool_calls 中有 decision=null, UI 输入框 disable + 展示 ask 面板
   │
-  ↓ 所有 pending 都 resolve, UI 触发恢复
-running (继续) 或 idle (全部 deny 后 LLM 决定结束)
+  ↓ 所有 decision 非 null
+running (resume)    → idle (run 完成后)
 ```
 
-**agent.run() 的硬拦规则**：
+**硬拦规则**：
 
-```
+```python
 def run(...):
-    pending = self._storage.find_pending_permissions(session_id)
-    if pending:
+    pending = self._storage.get_session(session_id).pending_tool_calls
+    if pending and any(v["decision"] is None for v in pending.values()):
         raise PendingPermissionsError(session_id=session_id, pending=pending)
     # 正常 run loop ...
 ```
 
-- **前端**：UI 层在 `awaiting_permission` 状态禁用输入框（产品主防线）
-- **后端**：`agent.run()` 硬拦作为**纵深防御**，保障脚本直调 API / 非 UI 客户端 / race condition 场景
-- **异常类型**：`PendingPermissionsError(pending: list[PendingPermission])`，调用方 catch 后可直接读取列表弹 UI
-
-**备选方案**：软返（`RunResult(status=..., pending=...)` 不抛异常），见 §3「备选方案 A1」。
+- **前端**：`awaiting_permission` 状态禁用输入框（产品主防线，用户无法输入新消息）
+- **后端**：硬拦作为纵深防御，保障脚本调 API / 非 UI 客户端 / race condition
 
 ### 数据库 Schema
 
-#### `pending_permissions` 表
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | TEXT PK | UUID |
-| `session_id` | TEXT FK | `ON DELETE CASCADE` 指向 session 表 |
-| `turn_id` | TEXT | 同 turn 的 pending 共享此 id |
-| `tool_call_id` | TEXT | LLM 生成的 tool_use id |
-| `tool_name` | TEXT | |
-| `tool_input` | JSON | LLM 传入的参数 |
-| `prompt` | TEXT | policy 生成的 ask 描述 |
-| `suggested_choices` | JSON | policy 生成的选项列表 |
-| `policy_id` | TEXT | 触发此 ask 的 policy 实例标识（`tool_name:ClassName`，resolve 时用于回调 `on_resolve`） |
-| `decision` | TEXT NULL | `NULL` / `allow` / `deny` |
-| `decision_metadata` | JSON NULL | 用户选择的 `AskChoice.metadata`（如 `{"scope": "session"}`） |
-| `created_at` | TIMESTAMP | |
-| `decided_at` | TIMESTAMP NULL | |
-
-**恢复推进的触发条件**：
-```sql
-SELECT 1 FROM pending_permissions
-WHERE session_id = ? AND decision IS NULL
-```
-结果为空，即可恢复。
-
-**级联清理**：session 被删除时 `ON DELETE CASCADE` 自动清 pending。不需要 TTL —— 每个 session 最多一组未决 pending（硬拦保证），跨 session 的"僵尸 session"是 session 层的问题，不是 permission 层。
-
-#### `policy_state` 表（带状态 policy 的通用存储）
+#### `permission_rules` 表（allow/deny 规则持久化）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `session_id` | TEXT FK | `ON DELETE CASCADE` |
-| `policy_id` | TEXT | 如 `run_shell_command:BashPermissionPolicy` |
-| `key` | TEXT | policy 自定义 |
-| `value` | JSON | policy 自定义 |
-| PK | `(session_id, policy_id, key)` | |
+| `tool_name` | TEXT | |
+| `rule_content` | TEXT | 匹配内容（如 `"npm"`, `"/workspace/**"`） |
+| `behavior` | TEXT | `allow` / `deny` |
+| `source` | TEXT | `config`（来自 AgentConfig）/ `user`（用户决策） |
+| `created_at` | TIMESTAMP | |
+| PK | `(session_id, tool_name, rule_content, behavior)` | |
 
-`PolicyStorage` helper 基于这张表提供 `get/set/delete` 接口。policy 实现自行决定如何用。
+Session 创建时，遍历 agent 的 tool 列表，将各 tool YAML 配置中的 `permissions` 初始化为 `source=config` 的规则行（allow 和 deny 都可能来自 config）。没有 `permissions` 的 tool 不写入规则。
+用户在 session 中点 allow 时追加 `source=user, behavior=allow` 的规则行。**deny 不写入此表**——deny 是单次的，不影响后续调用。
+`FrameworkContext` 构造时读取该 session + tool_name 的所有规则。
+
+#### `sessions.pending_tool_calls` 字段（Ask 状态）
+
+在现有 `sessions` 表上新增一列：
+
+```sql
+ALTER TABLE sessions ADD COLUMN pending_tool_calls JSON DEFAULT NULL;
+```
+
+JSON 结构（以 `tool_call_id` 为 key）：
+
+```json
+{
+  "tc_abc": {
+    "tool_name": "run_shell_command",
+    "prompt": "允许执行 npm install 吗?",
+    "permission_key": "npm",
+    "decision": null
+  },
+  "tc_def": {
+    "tool_name": "run_shell_command",
+    "prompt": "允许执行 rm -rf dist 吗?",
+    "permission_key": "rm",
+    "decision": "allow"
+  }
+}
+```
+
+- **`NULL`（列值）**：没有未决 ask，正常状态
+- **有值且含 `decision: null` 的条目**：`awaiting_permission`，硬拦生效
+- **所有 `decision` 非 null**：可触发 resume
+- **resume 处理完毕后**：整列写回 `NULL`
+
+**前端一条条处理**：UI 读取此字段，逐条展示 ask card 让用户决策。每次用户决策后更新对应条目的 `decision`。中途关窗口 OK——已 resolve 的保留 decision，未 resolve 的继续 null，下次打开接着处理。
+
+**级联清理**：session 删除时 `ON DELETE CASCADE` 自动清 permission_rules。`pending_tool_calls` 作为 session 自身的字段，随 session 一起删除。
+
+#### 数据库迁移脚本
+
+旧项目升级时需要自动执行迁移。框架在启动时检测 schema 版本，若缺少权限相关表/字段则执行 `001_tool_permission.sql`：
+
+```sql
+-- 001_tool_permission.sql
+-- 幂等：使用 IF NOT EXISTS，可重复执行
+
+CREATE TABLE IF NOT EXISTS permission_rules (
+    session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    tool_name   TEXT NOT NULL,
+    rule_content TEXT NOT NULL,
+    behavior    TEXT NOT NULL CHECK (behavior IN ('allow', 'deny')),
+    source      TEXT NOT NULL CHECK (source IN ('config', 'user')),
+    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (session_id, tool_name, rule_content, behavior)
+);
+
+-- SQLite 不支持 ADD COLUMN IF NOT EXISTS，用 pragma 检测后条件执行
+-- 框架层用 Python 检测列是否存在，不存在时执行：
+-- ALTER TABLE sessions ADD COLUMN pending_tool_calls JSON DEFAULT NULL;
+```
+
+框架启动时的迁移检测逻辑：
+
+```python
+def migrate_001_tool_permission(db):
+    # 1. permission_rules 表（CREATE IF NOT EXISTS 天然幂等）
+    db.execute(PERMISSION_RULES_DDL)
+
+    # 2. sessions.pending_tool_calls 列（SQLite 无 IF NOT EXISTS 语法，需检测）
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(sessions)")}
+    if "pending_tool_calls" not in columns:
+        db.execute("ALTER TABLE sessions ADD COLUMN pending_tool_calls JSON DEFAULT NULL")
+```
 
 ### Resume 语义
 
-`agent.run()` 被再次调用、且 pending 已全部 resolve 时：
+`agent.run()` 检测到 `pending_tool_calls` 所有 `decision` 均非 null 后进入 resume 路径：
 
-1. executor 读出本 session 最近一批 pending（按 `turn_id` 聚合，最新一个 turn）
-2. 按 `tool_call_id` 顺序处理：
-   - `decision=allow`：回调 `policy.on_resolve(ctx, "allow", metadata)`（policy 可据此更新 session 白名单等内部状态），然后真正派发 tool（执行 binding、记录 ToolResult、处理 middleware before/after hooks）
-   - `decision=deny`：回调 `policy.on_resolve(ctx, "deny", metadata)`，然后合成 `ToolResultBlock(is_error=True, content=denial_msg)`，denial_msg 来自 pending 的 `prompt` 或 policy 默认文案（"User declined: {prompt}"）
-3. 所有 pending 对应的 tool_result 写入 history
-4. 删除已消费的 pending 记录（或标记 `consumed=true`，视保留策略）
-5. 进入正常的 LLM loop（用这批 tool_result 继续下一次 LLM 调用）
+1. 读出 `session.pending_tool_calls`
+2. 按 `tool_call_id` 逐条处理：
+   - `decision=allow`：写 `permission_key` 到 `permission_rules` 表（`source=user, behavior=allow`），重新调用 tool 函数（这次匹配命中 allow 规则 → 放行 → 正常执行）
+   - `decision=allow_once`：构造 `FrameworkContext` 时将 `permission_key` 临时加入 `allow_rules`（不写 DB），重新调用 tool 函数（匹配命中 allow → 放行）
+   - `decision=deny`：合成 denial ToolResult（不调用 tool 函数，不写规则）
+3. 所有 orphan tool_use 对应的 ToolResult 写入 history（闭合）
+4. `session.pending_tool_calls` 写回 `NULL`
+5. 进入正常的 LLM loop
 
-**幂等性**：resume 过程中进程挂掉时，pending 标记 `decision` 已写、tool 未派发的场景可能重复 resume —— 通过"消费前加 `consumed_at` 标记"确保 allow 类 tool 不会重复执行。
-
-### 内置 Policy
-
-#### FileSystemPermissionPolicy
-
-```
-FileSystemPermissionPolicy(
-    readonly_allowed_paths: list[str] = ["/workspace"],
-    ask_on_write: bool = True,
-    forbidden_paths: list[str] = [".env", "~/.ssh/**"],
-)
-```
-
-- 绑定方式：在 `AgentConfig.permissions` 中按 tool_name 绑定（如 `"read_file"` / `"write_file"` / `"edit_file"`），同一个 policy 类可用不同配置实例化后分绑不同 tool
-- 路径匹配使用 `pathspec` 库（gitignore 语义，与 CC 一致）
-- 读 tool 绑定的实例：路径在 `readonly_allowed_paths` 下 → Allow；在 `forbidden_paths` → Deny；其它 → Ask
-- 写 tool 绑定的实例：`ask_on_write=True` 时，任何非 forbidden 路径 → Ask；forbidden → Deny
-- `on_resolve` hook：用户点 "allow_session" 时，将该路径 pattern 加入 `PolicyStorage` 的 session 白名单，后续同路径调用直接 Allow
-
-#### BashPermissionPolicy
-
-```
-BashPermissionPolicy(
-    safe_commands: set[str] = {"ls", "cat", "grep", "pwd", "echo"},
-    forbidden_commands: set[str] = {"rm", "dd", "mkfs", "shutdown"},
-)
-```
-
-- 绑定方式：`"run_shell_command": BashPermissionPolicy(...)`
-- 使用 `shlex` 解析 `command` 参数，取首词做匹配
-- 在 `safe` → Allow；在 `forbidden` → Deny；其它 → Ask
-- `on_resolve` hook：用户点 "allow_session" 时，将该命令首词加入 `PolicyStorage` 的 session 白名单
-
-#### Session 白名单不是独立 Policy
-
-之前设计中有一个独立的 `SessionWhitelistPolicy`（横切所有 tool）。在 per-tool 模型下**这不存在**——session 白名单是**每个 policy 内部的状态**。
-
-机制：当一个 Ask 被用户 resolve 为 `allow_session` 时，框架回调该 policy 的 `on_resolve(ctx, decision, metadata)` hook，policy 通过 `ctx.storage` 写入 session 级记忆。下次 `check()` 时先查 `PolicyStorage`，命中则直接返回 Allow。
-
-这样的好处：
-- **粒度更细**：`BashPermissionPolicy` 记住的是"这个 session 里 `npm` 命令已允许"，而不是"整个 run_shell_command tool 已允许"
-- **policy 自治**：每个 policy 自己决定 session 白名单的 key 语义（命令首词 / 路径前缀 / 自定义逻辑）
-- **不破坏 per-tool 模型**：不存在一个"全局横切 policy"的特例
-
-#### （非本 RFC 交付）应用层 policy
-
-产品层（如 North Coder）可实现自定义 policy 处理更复杂场景（用户配置体系、project 级白名单、CC 风格 rule 字符串语法等）。本 RFC 只负责框架原语 + 内置 policy，保证 `PermissionPolicy` Protocol 和 `PolicyStorage` 提供足够的 primitive 让产品层自由扩展。
-
-**分层原则**：NexAU 只提供决策原语（`PermissionPolicy` / `PermissionDecision`）、Ask 持久化状态机、和内置 policy 类（Python-native kwargs 配置）。Rule 字符串语法（`Read(/foo/**)`）、settings 文件 schema、source 优先级体系（user / project / session）、permission mode（default / acceptEdits / bypassPermissions / plan）等**用户体验层设施属于嵌入产品**。
+**幂等性**：resume 过程中进程挂掉时，通过逐条处理 + 标记已消费条目确保 allow 类 tool 不会被重复执行。具体做法：每条 tool 执行成功后立即将该条目的 `decision` 更新为 `consumed`，重试时跳过已 consumed 的条目。
 
 ## 备选方案
 
 ### A1. 软返 vs 硬拦（定：硬拦）
 
-**方案**：`agent.run()` 检测到 session 有未决 pending 时，返回 `RunResult(status="paused_for_permissions", pending=[...])`，不抛异常。
+**方案**：`agent.run()` 检测到未决 pending 时返回 `RunResult(status="paused_for_permissions", pending=[...])`，不抛异常。
 
 **不选的原因**：
-- 调用方很容易**忽略**异常路径（不 catch 特定状态），导致"静默继续跑"这种难发现的 bug
-- 异常路径 = 非 happy path，用异常表达更贴合"我明确不能继续"的语义
-- 现有 NexAU 其它地方（`SessionNotFound`、`AgentLockError` 等）都用异常表达阻塞态，保持一致
-
-**选硬拦**：`raise PendingPermissionsError(session_id, pending)`。调用方要么 catch + 弹 UI，要么让异常冒泡（脚本场景直接 crash）—— 都不会误进 LLM loop。
+- 调用方容易忽略特定状态，导致"静默继续跑"
+- NexAU 其他阻塞态（`SessionNotFound`、`AgentLockError`）都用异常，保持一致
 
 ### A2. 全 turn 冻结 vs 立刻执行 Allow/Deny（定：立刻执行）
 
-**方案**：一个 turn 里 `[Allow, Ask, Deny]` 混合判决时，**三条都写 pending**（Allow/Deny 预填 decision），等 Ask 的 pending 被 resolve 后一起放行：Allow 派发、Deny 写 denial。turn 原子。
+**方案**：同 turn 内 `[Allow, Ask, Deny]` 混合时，三条都挂起，等 Ask resolve 后再一起处理。
 
-**优点**：
-- Turn 要么整体已执行要么整体未执行，副作用型 tool（写文件、调 API）更安全
-- 用户若 deny Ask 后反悔想整个 turn 重来，Allow 的副作用还没发生
-- 语义更对称（都经过一次 DB 持久化 + resolve 推进）
+**优点**：turn 原子，副作用可回退。
 
-**不选的原因**：
-- 增加延迟（Allow 本来可以立即跑）
-- 增加状态机复杂度（"预填 decision" 和 "用户填 decision" 本质上是两种 pending，resume 路径需要区分）
-- Allow 的语义是"批准执行"，延迟执行违反直觉
+**不选的原因**：增加延迟和状态机复杂度；Allow 语义是"已批准"，延迟执行违反直觉。
 
-**选立刻执行**：简单、低延迟、符合 Allow 的直觉语义；副作用原子性交给产品层（UI 引导用户不要混合操作）解决。
+### A3. 独立 PermissionPolicy 对象 vs 函数内检查（定：函数内）
 
-### A3. 跨 tool 的 policy list（定：per-tool dict 绑定）
-
-**方案**：`AgentConfig.permissions: list[PermissionPolicy]`，每个 policy 通过 `applies_to(tool) -> bool` 声明自己管哪些 tool。多个 policy 按列表顺序求值，first-decisive-wins（第一个返回非 Allow 的 policy 决定结果）。
+**方案**：定义独立的 `PermissionPolicy` Protocol，通过 `AgentConfig.permissions: dict[str, PermissionPolicy]` per-tool 绑定。权限检查在 tool 调用前（pre-dispatch）由框架执行。
 
 ```python
-permissions=[
-    SessionWhitelistPolicy(),        # 横切所有 tool
-    FileSystemPermissionPolicy(...), # 管所有 FS 类 tool
-    BashPermissionPolicy(...),       # 管 shell tool
-]
+class PermissionPolicy(Protocol):
+    def check(self, tool: Tool, ctx: PolicyContext, **input_kwargs) -> PermissionDecision: ...
+
+AgentConfig(permissions={"run_shell_command": BashPermissionPolicy(safe={"ls"}, ...)})
 ```
 
 **优点**：
-- 一个 policy 实例可以横切多个 tool（如 `SessionWhitelistPolicy` 管所有 tool）
-- 灵活的组合能力（policy chain 可以任意排列优先级）
+- 框架强制检查，tool 作者不可能忘记
+- 权限逻辑与 tool 实现解耦，可独立测试
 
 **不选的原因**：
-- 违反 leader 的设计原则"每种工具都会有自己的 PermissionPolicy"——per-tool 绑定更清晰
-- 多个 policy 对同一个 tool call 发表意见时，判决合并规则不直观（顺序敏感的 first-decisive-wins 还是 deny > ask > allow？不管选哪种都在增加心智负担）
-- `applies_to` 是 policy 自己声称管哪些 tool，绑定关系不在 config 里显式声明，读 config 时无法一眼看出某个 tool 被谁管
-- Session 白名单可以退化为 per-tool policy 的内部状态（通过 `on_resolve` hook），不需要独立横切 policy
+- Tool 作者最了解自己工具的语义，把判断逻辑放在函数内部更自然（如 Stripe 例子中"读不查、测试不查、生产大额才查"）
+- 独立 Policy 对象增加了抽象层数，但没带来本质上更强的能力——Ask 的核心机制（raise → persist → stop → resume）两种方案相同
+- "每种工具有自己的 PermissionPolicy"这一原则，通过函数内 raise `AskPermission` / `PermissionDenied` 同样满足
 
-**选 per-tool dict**：`AgentConfig.permissions: dict[str, PermissionPolicy]`，key = tool_name，一个 tool 只有一个 policy，决策路径无歧义。Session 白名单由每个 policy 自己通过 `PolicyStorage` 维护。
+**折中可能**：两种方案可以共存。框架内置 tool 用 pre-dispatch 保证安全兜底，开发者自定义 tool 用函数内检查获得灵活度。但 MVP 阶段先只做函数内方案，按需再补 pre-dispatch。
 
-### A4. 基于 Middleware 的旧方向（rejected）
+### A4. 跨 tool 的 policy list（rejected）
 
-**方案**（旧 RFC-0019 草案、`feat/middleware-stop-agent-run` 分支、PR #480）：在 `Middleware` 上新增 `should_stop_agent_run(hook_input) -> str | None` hook，返回非 None 字符串即停掉 run，`agent.run()` 返回 `(text, meta)` 元组携带 stop reason。不引入 `PermissionPolicy`，复用现有 middleware 体系。
+**方案**：`AgentConfig.permissions: list[PermissionPolicy]`，每个 policy 通过 `applies_to(tool)` 声明管哪些 tool，多个 policy 对同一 tool call 投票。
 
-**已踩到的坑**（详见 `feat/middleware-stop-agent-run` 分支上的实验记录）：
-1. Raise 绕开正常 tool 派发路径 → orphan tool_use → LLM 幻觉
-2. after_model middleware 的 history 改写被 raise 吞掉
-3. Sibling tool_calls 在 raise 时也变成 orphan
-4. 只能 stop，做不出 ask 交互（CC 的 `allow / deny / ask` 三选变成"重启 run"）
-5. 新增 `STOPPED_BY_MIDDLEWARE` StopReason 让框架感知插件语义，抽象倒置
-
-**根本问题**：middleware 是插件扩展点而非框架原语。Permission 是一等公民，应自有抽象。
-
-**处理**：本 RFC 合入后：
-- `feat/middleware-stop-agent-run` 分支 close，PR #480 改成 closed-not-merged 并在 PR 描述链接到本 RFC
-- `should_stop_agent_run` hook **不合入** NexAU main
-- 旧的 RFC-0019 文件名 (`0019-pre-dispatch-suspension-hook.md` 等) 不保留
+**不选的原因**：多 policy 投票的合并语义与白名单矛盾。"最严格者胜"（deny > ask > allow）下，白名单的 Allow 永远被其他 policy 的 Ask/Deny 覆盖，形同虚设。要让白名单生效就得引入优先级或 override 机制，复杂度急增。Per-tool 模型（无论是独立 Policy 还是函数内检查）不存在这个问题。
 
 ## 迁移
 
-本 RFC 为**新增能力**，现有 agent（`AgentConfig.permissions is None`）行为不变 —— 所有 tool 默认 Allow，与当前一致。无破坏性变更。
+本 RFC 为**新增能力**，现有 tool（YAML 中无 `permissions` 字段）默认 `allow: ["**"], deny: []`，权限检查命中 `"**"` 直接放行，行为与当前一致。升级 NexAU 不会改变任何现有 tool 的默认行为。
 
 下游项目（North Coder）接入时：
 1. 升级 NexAU 到含本 RFC 的版本
-2. 定义所需 policy（使用内置的 `FileSystemPermissionPolicy` / `BashPermissionPolicy`，或自定义）
-3. 在构造 `AgentConfig` 时加上 `permissions={"tool_name": policy_instance, ...}`
-4. 业务层实现 UI：读 `pending_permissions` 表 + resolve API
-5. （可选）产品层自建 CC 风格 rule 字符串语法 / settings 加载 / permission mode 等 UX 设施——这些属于产品层，不在 NexAU 框架范围
+2. 为需要权限控制的 tool 函数添加 `ctx: FrameworkContext` 参数，在入口处编写权限检查逻辑（可使用框架 helper 或参考其实现）
+3. 在 tool 的 YAML 配置中添加 `permissions` 字段声明初始 allow/deny 规则
+4. 业务层实现 UI：读 `session.pending_tool_calls` 展示 ask 面板 + resolve API
+5. （可选）产品层自建 CC 风格 rule 字符串语法、settings 文件、permission mode 等 UX 设施——这些属于产品层
 
 ## 测试计划
 
 ### 单元测试（覆盖率目标 ≥ 80%）
-- `PermissionPolicy` / `PermissionDecision` 类型与构造
-- `AgentConfig.permissions` dict 绑定：tool_name 查找、未绑定 tool 默认 Allow
-- `PolicyContext` / `PolicyStorage` 读写、键空间隔离
-- `on_resolve` hook 回调：allow_session 触发 policy 内部状态更新
-- Executor 集成：Allow 正常派发、Deny 写 ToolResult、Ask 写 pending
-- 同 turn 混合 `[Allow, Ask, Deny]` 处理（不同 tool、不同 policy）
-- `agent.run()` 硬拦：session 有 pending 时 raise
-- Resume 语义：allow 派发、deny 合成、一致性
-- 级联清理：session 删除带走 pending
-- 幂等性：resume 中断后重试不重复执行 allow tool
+- `FrameworkContext` 构造：从 AgentConfig + DB 合并规则
+- 内置 tool 匹配 helper：`check_path_permission` pathspec gitignore 语义、`check_shell_permission` shlex 首词解析
+- helper 三态行为：命中 allow → 返回、命中 deny → raise PermissionDenied、无命中 → raise AskPermission
+- Tool YAML permissions 初始化：session 创建时写入 `permission_rules` 表
+- Executor 集成：并行 tool call 的异常安全收集（AllowOutcome / DenyOutcome / AskOutcome）
+- Executor 集成：Allow 正常执行、Deny 写 denial ToolResult、Ask 写入 `session.pending_tool_calls` + 停 run
+- 同 turn 混合决策处理（含多个 Ask 并行场景）
+- `agent.run()` 硬拦：`pending_tool_calls` 有未决 decision 时 raise
+- Resume 三条路径：allow（re-call + 写规则）、allow_once（re-call + 临时加入 allow_rules + 不写规则）、deny（合成 denial）
+- 级联清理：session 删除带走 rules，`pending_tool_calls` 随 session 删除
+- 幂等性：resume 中断后重试不重复执行 allow tool（consumed 标记）
 
 ### 集成测试
-- 内置 `FileSystemPermissionPolicy` 全路径场景
-- 内置 `BashPermissionPolicy` 全路径场景
-- E2E：LLM → Ask → 关进程 → 重启进程 → resolve → 继续 → 正常完成
+- E2E：LLM → Ask → 关进程 → 重启 → resolve → resume → 正常完成
+- E2E：连续 Ask → 同命令第二次直接放行（allow 规则生效）
+- E2E：deny 后同命令再次 ask（deny 不持久化）
+- E2E：allow_once 后同命令再次 ask（无持久化）
 
 ### 非回归测试
 - 现有 NexAU 单元/集成测试全绿（`permissions=None` 的默认路径）
-- `feat/middleware-async-pause-for-permissions`、`feat/tool-governance-middleware-rfc` 等关联分支上的测试如果有冲突，单独评估
 
 ## 子任务分解
 
@@ -467,12 +474,12 @@ permissions=[
 
 ```mermaid
 graph TD
-    T1[T1: 核心类型 + PermissionPolicy API]
-    T2[T2: PolicyStorage + pending_permissions 表]
-    T3[T3: Executor 集成 + 三态路由]
+    T1[T1: FrameworkContext + 权限类型 + 匹配 helper]
+    T2[T2: DB schema: permission_rules 表 + sessions.pending_tool_calls 字段]
+    T3[T3: Executor 集成 + 并行异常安全 + Ask 持久化]
     T4[T4: agent.run 硬拦 + Resume 语义]
-    T5[T5: 内置 FileSystem/Bash policy]
-    T6[T6: E2E 集成测试 + 迁移清理]
+    T5[T5: 内置 tool 适配]
+    T6[T6: E2E 测试]
 
     T1 --> T3
     T2 --> T3
@@ -484,61 +491,52 @@ graph TD
 
 ### 子任务列表
 
-#### T1: 核心类型 + PermissionPolicy API
-**范围**：定义 `PermissionPolicy` Protocol（含 `check` 方法 + 可选 `on_resolve` hook）、`PermissionDecision`（Allow/Deny/Ask/AskChoice）、`PolicyContext`、`PendingPermissionsError`，扩展 `AgentConfig.permissions` 字段（`dict[str, PermissionPolicy] | None`，默认 None）。
+#### T1: FrameworkContext + 权限类型 + 匹配 helper
+**范围**：定义 `FrameworkContext`（纯数据载体，含 `allow_rules` / `deny_rules`）、`PermissionRules`、`AskPermission` / `PermissionDenied` 异常、`PendingPermissionsError`。扩展 tool YAML schema 支持 `permissions` 字段（内联 list 或指向外部文件）。实现内置 tool 的匹配 helper 函数 `check_path_permission()` / `check_shell_permission()`（参考实现）。
 **验收标准**：
 - 类型定义及 import path 稳定（`nexau.archs.permissions` 新子包）
-- `AgentConfig(permissions=None)` 现有测试全绿（向后兼容）
-- `AgentConfig.permissions` 按 tool_name key 查找 policy
-- 单元测试：类型构造、frozen dataclass 不可变性、dict 绑定语义
+- 无 `permissions` 的 tool 现有测试全绿（向后兼容）
+- 单元测试：helper 函数三态行为
 **依赖**：无
 
-#### T2: PolicyStorage + pending_permissions 表
-**范围**：新增 SQLite 迁移（`pending_permissions` 表 + `policy_state` 表），实现 `PolicyStorage` helper（`get/set/delete`），实现 `PendingPermissionRepo`（CRUD + `find_pending(session_id)`、`mark_decision`、`mark_consumed`）。级联删除配置（`ON DELETE CASCADE`）。
+#### T2: DB schema: permission_rules 表 + sessions.pending_tool_calls 字段
+**范围**：编写 `001_tool_permission.sql` 迁移脚本（`permission_rules` 表 + `sessions` 表新增 `pending_tool_calls` JSON 列）。实现迁移检测逻辑（启动时自动检测并执行）。实现 CRUD helper。级联删除配置。Session 创建时从各 tool 的 YAML `permissions` 初始化规则。
 **验收标准**：
-- 迁移脚本幂等、支持回滚
-- 单元测试：CRUD、cascade delete、并发写入（同 session 多条 pending）
-- `PolicyStorage` 键空间隔离（不同 policy 不串台）
+- `001_tool_permission.sql` 迁移脚本幂等（重复执行无副作用）
+- 旧数据库升级：无 permission_rules 表和 pending_tool_calls 列时自动创建
+- 新数据库：首次建库时正常创建
+- 单元测试：permission_rules CRUD、cascade delete、规则初始化
+- 单元测试：`pending_tool_calls` 字段的读写、NULL 判断
 **依赖**：无
 
-#### T3: Executor 集成 + 三态路由
-**范围**：在 `executor._process_xml_calls_async`（或等效派发入口）前，对每个 tool call 按 `tool_name` 查 `permissions` dict 取 policy 并调用 `check()`；根据决策路由：Allow 走原路径；Deny 合成 denial ToolResult 加入 history；Ask 写 pending_permissions + 抛 `AgentRunPausedForPermissions`（与 `PendingPermissionsError` 不同——此异常由 run loop 内部捕获并转为 run 的正常结束状态）。同 turn 内 `[Allow, Ask, Deny]` 混合按"立刻执行 Allow/Deny + Ask 挂起"处理（§3.4）。
+#### T3: Executor 集成 + 并行异常安全 + Ask 持久化
+**范围**：Executor 在 tool 调用时构造 `FrameworkContext`（从 DB 加载规则）并传给 tool 函数。每条 tool call 外层独立 try/except，将异常收集为 `ToolOutcome`（`AllowOutcome` / `DenyOutcome` / `AskOutcome`），gather 后统一处理。`AskOutcome` 写入 `session.pending_tool_calls`。同 turn 内混合决策按"立即执行 Allow/Deny + Ask 挂起"处理。
 **验收标准**：
-- 单元测试：所有三态在 executor 中的行为（含 tool 无 policy → 默认 Allow）
-- 单元测试：混合决策（同 turn 不同 tool 不同 policy 不同判决）、sibling tool_call 处理
-- Denial ToolResult 的 content 格式稳定（前端可 parse）
-- 不破坏现有 middleware before/after_tool 的调用时机（policy 在 middleware 之前）
+- 单元测试：三态在 executor 中的行为
+- 单元测试：并行多 Ask 场景不丢失异常
+- 单元测试：混合决策处理
+- 不破坏现有 middleware before/after_tool 调用时机
 **依赖**：T1, T2
 
 #### T4: agent.run 硬拦 + Resume 语义
-**范围**：`agent.run()` 入口先查 pending，非空则 raise `PendingPermissionsError`；新增 `agent.resolve_permission(tool_call_id, decision, metadata)` API 写 DB；resume 路径：下一次 `agent.run()` 调用时，若上次 turn 有 pending 且全部 resolved，按顺序消费 pending（allow 派发、deny 合成）后进入 LLM loop；幂等性标记（`consumed_at`）。
+**范围**：`agent.run()` 入口检查 `session.pending_tool_calls`，有未决 decision 则 raise `PendingPermissionsError`。新增 `agent.resolve_permission(tool_call_id, decision)` API（更新 `pending_tool_calls` 中对应条目的 decision）。Resume 路径：allow → 写规则 + re-call tool、allow_once → 将 `permission_key` 临时加入 `allow_rules` + re-call tool、deny → 合成 denial。幂等标记 `consumed`。
 **验收标准**：
-- 单元测试：硬拦路径、resolve API、resume 顺序 & 幂等
-- 集成测试：完整 pause → 关 Agent 实例 → 新 Agent 实例 resume（验证无 in-memory 依赖）
-- `RunResult` / `AgentResponse` 扩展字段的向后兼容
+- 单元测试：硬拦、resolve API、resume 三条路径、幂等
+- 集成测试：pause → 关 Agent 实例 → 新实例 resume
 **依赖**：T3
 
-#### T5: 内置 FileSystem / Bash policy
-**范围**：实现 `FileSystemPermissionPolicy`（含 `on_resolve` session 白名单逻辑）和 `BashPermissionPolicy`（含 `on_resolve` session 白名单逻辑），配套单元测试覆盖所有规则分支。FileSystem policy 路径匹配基于 `pathspec` 库（gitignore 语义）；Bash policy 命令解析基于 `shlex`。
+#### T5: 内置 tool 适配
+**范围**：为 NexAU 内置 tool（read_file / write_file / edit_file / run_shell_command）添加 `ctx: FrameworkContext` 参数，在函数入口处调用对应的匹配 helper（`check_path_permission` / `check_shell_permission`）。
 **验收标准**：
-- FileSystem policy：readonly_allowed_paths / forbidden_paths / ask_on_write 全部分支有测试
-- FileSystem policy：`on_resolve(allow_session)` 后同路径再次调用返回 Allow
-- Bash policy：safe / forbidden / default-ask 全部分支有测试
-- Bash policy：`on_resolve(allow_session)` 后同命令首词再次调用返回 Allow
-- `PolicyStorage` 读写在两个 policy 间不串台
+- 内置 tool 函数签名更新，现有不传 ctx 的调用方式向后兼容（`ctx=None` 时跳过检查）
+- Filesystem 匹配：gitignore 语义全覆盖测试
+- Shell 匹配：首词 / 复合命令 / 转义 全覆盖测试
 **依赖**：T1
 
-#### T6: E2E 集成测试 + 迁移清理
-**范围**：写 `examples/e2e_tool_permission/` 下的两个脚本：`start.py`（自动化 Round 1 Ask → resolve → Round 2 继续完成）、`interactive.py`（人工 playground，ask 面板用 CLI 模拟）；写集成测试 `test_tool_permission_e2e.py`；Close PR #480 和 `feat/middleware-stop-agent-run`，在 NexAU README 更新权限特性段落。
+#### T6: E2E 测试
+**范围**：`examples/e2e_tool_permission/` 下的脚本（自动化 + interactive playground）；集成测试 `test_tool_permission_e2e.py`。
 **验收标准**：
 - E2E 脚本跑通，assertion 全绿
-- 集成测试覆盖：LLM → Ask → 进程重启 → resume → 完成
-- PR #480 状态为 closed + 链接到本 RFC
-- README 更新权限能力描述
+- 集成测试覆盖：Ask → 进程重启 → resume → 完成
+- 集成测试覆盖：allow（持久化）/ allow_once（不持久化）/ deny（不持久化）三条路径行为正确
 **依赖**：T4, T5
-
-## 相关文档
-
-- `feat/middleware-stop-agent-run` 分支上的实验复盘（已随分支 reset 删除；要点已凝练到本 RFC §3 备选方案 A3）
-- RFC-0018 (External Tool): 提供了"executor 暂停 + 外部恢复"的参考实现（虽然语义不同，但 session 级持久化模型有借鉴价值）
-- North Coder RFC-0065 (Tool Permission Management MVP): 本 RFC 落地后，NC 的 RFC-0065 需同步调整实现策略，改为基于 `PermissionPolicy` 抽象的应用层集成
