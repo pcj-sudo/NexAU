@@ -22,6 +22,8 @@ from pathlib import PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.main_sub.framework_context import FrameworkContext
+from nexau.archs.permissions.helpers import check_path_permission
 from nexau.archs.sandbox import BaseSandbox, SandboxStatus
 from nexau.archs.tool.builtin._sandbox_utils import get_sandbox, resolve_path
 
@@ -503,7 +505,12 @@ def _build_summary(added: list[str], modified: list[str], deleted: list[str]) ->
     return "\n".join(lines) + "\n"
 
 
-def apply_patch(input: str, agent_state: AgentState | None = None) -> dict[str, Any]:
+def apply_patch(
+    input: str,
+    agent_state: AgentState | None = None,
+    *,
+    ctx: FrameworkContext | None = None,
+) -> dict[str, Any]:
     """
     Apply a Codex-style multi-file patch inside the active NexAU sandbox.
 
@@ -517,6 +524,11 @@ def apply_patch(input: str, agent_state: AgentState | None = None) -> dict[str, 
     try:
         sandbox = get_sandbox(agent_state)
         hunks = _parse_patch_text(input)
+
+        # RFC-0019: 权限检查（解析 patch 后、执行文件操作之前）
+        if ctx is not None:
+            for hunk in hunks:
+                check_path_permission(ctx, hunk.path)
 
         if not hunks:
             return _error_result("No files were modified.", "EMPTY_PATCH")
