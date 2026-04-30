@@ -39,6 +39,7 @@ from nexau.archs.permissions.types import PendingPermissionsError
 from nexau.archs.session import SessionManager
 from nexau.archs.session.orm import InMemoryDatabaseEngine
 from nexau.archs.tool.tool import Tool
+from nexau.archs.tracer.adapters.langfuse import LangfuseTracer
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +188,7 @@ class TestToolPermissionRealLLM:
             llm_config=LLMConfig(temperature=0),
             tools=tools,
             max_iterations=15,
+            tracers=[LangfuseTracer()],
         )
 
         agent = await Agent.create(
@@ -305,6 +307,7 @@ class TestToolPermissionRealLLM:
             llm_config=LLMConfig(temperature=0),
             tools=tools,
             max_iterations=15,
+            tracers=[LangfuseTracer()],
         )
 
         agent = await Agent.create(
@@ -372,6 +375,7 @@ class TestToolPermissionRealLLM:
             llm_config=LLMConfig(temperature=0),
             tools=tools,
             max_iterations=10,
+            tracers=[LangfuseTracer()],
         )
 
         agent = await Agent.create(
