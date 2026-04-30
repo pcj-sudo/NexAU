@@ -16,10 +16,17 @@
 web_fetch - Wraps web_tool.web_read, output as gemini-cli format.
 """
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from nexau.archs.permissions.helpers import check_url_permission
+
 from .web_tool import web_read as _web_read
+
+if TYPE_CHECKING:
+    from nexau.archs.main_sub.framework_context import FrameworkContext
 
 
 def _parse_url_from_prompt(text: str) -> tuple[list[str], list[str]]:
@@ -53,6 +60,7 @@ def web_fetch(
     url: str | None = None,
     timeout: int = 100,
     use_html_parser: bool = True,
+    ctx: FrameworkContext | None = None,
 ) -> dict[str, Any]:
     """
     Fetch content using web_tool.web_read (HtmlParser + direct HTTP).
@@ -86,6 +94,10 @@ def web_fetch(
             if valid_urls:
                 target_url = valid_urls[0]
                 prompt_text = prompt
+
+        # CC 对齐: 域名级权限检查（在任何网络请求之前）
+        if ctx is not None and target_url:
+            check_url_permission(ctx, target_url)
 
         if not target_url:
             return {

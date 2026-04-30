@@ -7,6 +7,7 @@ from nexau.archs.permissions.helpers import (
     check_path_permission,
     check_permission,
     check_shell_permission,
+    check_url_permission,
 )
 from nexau.archs.permissions.types import AskPermission, PermissionDenied
 
@@ -122,10 +123,100 @@ class TestCheckShellPermission:
         check_shell_permission(ctx, "git commit -m 'message with spaces'")
 
     def test_pipe_command_checks_first_word(self) -> None:
+        # cat 在只读白名单中，所以自动放行
         ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=[])
+        check_shell_permission(ctx, "cat file.txt | grep pattern")
+
+    # CC 对齐: 只读命令白名单测试
+    def test_readonly_command_auto_allows(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=[])
+        check_shell_permission(ctx, "ls -la /workspace")
+        check_shell_permission(ctx, "cat file.txt")
+        check_shell_permission(ctx, "head -n 10 file.txt")
+        check_shell_permission(ctx, "grep pattern file.txt")
+        check_shell_permission(ctx, "find . -name '*.py'")
+        check_shell_permission(ctx, "wc -l file.txt")
+        check_shell_permission(ctx, "diff a.txt b.txt")
+        check_shell_permission(ctx, "pwd")
+
+    def test_readonly_git_subcommand_auto_allows(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=[])
+        check_shell_permission(ctx, "git log --oneline")
+        check_shell_permission(ctx, "git status")
+        check_shell_permission(ctx, "git diff HEAD~1")
+        check_shell_permission(ctx, "git branch -a")
+        check_shell_permission(ctx, "git show HEAD")
+
+    def test_git_write_subcommand_asks(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=[])
+        with pytest.raises(AskPermission):
+            check_shell_permission(ctx, "git push origin main")
+        with pytest.raises(AskPermission):
+            check_shell_permission(ctx, "git commit -m 'test'")
+        with pytest.raises(AskPermission):
+            check_shell_permission(ctx, "git reset --hard HEAD")
+
+    def test_deny_overrides_readonly_whitelist(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=["cat"])
+        with pytest.raises(PermissionDenied):
+            check_shell_permission(ctx, "cat /etc/passwd")
+
+    def test_non_readonly_command_asks(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=[])
+        with pytest.raises(AskPermission):
+            check_shell_permission(ctx, "npm install express")
+        with pytest.raises(AskPermission):
+            check_shell_permission(ctx, "curl https://example.com")
+        with pytest.raises(AskPermission):
+            check_shell_permission(ctx, "docker run hello-world")
+
+
+# ---------------------------------------------------------------------------
+# check_url_permission: 域名级（CC 对齐 WebFetch）
+# ---------------------------------------------------------------------------
+
+
+class TestCheckUrlPermission:
+    def test_wildcard_allow(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=["**"])
+        check_url_permission(ctx, "https://evil.com/hack")
+
+    def test_deny_exact_domain(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=["evil.com"])
+        with pytest.raises(PermissionDenied):
+            check_url_permission(ctx, "https://evil.com/path")
+
+    def test_deny_wildcard_subdomain(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=["*.evil.com"])
+        with pytest.raises(PermissionDenied):
+            check_url_permission(ctx, "https://api.evil.com/data")
+
+    def test_allow_exact_domain(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=["github.com"], deny_rules=[])
+        check_url_permission(ctx, "https://github.com/user/repo")
+
+    def test_allow_wildcard_subdomain(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=["*.github.com"], deny_rules=[])
+        check_url_permission(ctx, "https://api.github.com/repos")
+
+    def test_no_match_raises_ask(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=["github.com"], deny_rules=[])
         with pytest.raises(AskPermission) as exc_info:
-            check_shell_permission(ctx, "cat file.txt | grep pattern")
-        assert exc_info.value.permission_key == "cat"
+            check_url_permission(ctx, "https://unknown.com/page")
+        assert exc_info.value.permission_key == "unknown.com"
+
+    def test_deny_takes_priority(self) -> None:
+        ctx = FrameworkContext.for_testing(
+            allow_rules=["*.example.com"],
+            deny_rules=["secret.example.com"],
+        )
+        with pytest.raises(PermissionDenied):
+            check_url_permission(ctx, "https://secret.example.com/data")
+
+    def test_empty_rules_raises_ask(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=[])
+        with pytest.raises(AskPermission):
+            check_url_permission(ctx, "https://any-site.com")
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@
 #
 # 提供权限异常类型、ToolOutcome 数据类、匹配 helper 函数。
 
-from .helpers import check_path_permission, check_permission, check_shell_permission
+from .helpers import check_path_permission, check_permission, check_shell_permission, check_url_permission
 from .types import (
     AllowOutcome,
     AskOutcome,
@@ -24,4 +24,5 @@ __all__ = [
     "check_permission",
     "check_path_permission",
     "check_shell_permission",
+    "check_url_permission",
 ]
