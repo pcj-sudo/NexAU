@@ -13,7 +13,20 @@
 
 ## 测试环境准备
 
-### 1. 启动测试 agent
+### 方式 A：CC Agent + E2B 沙箱（推荐，覆盖全部 15 个工具含 run_code_tool）
+
+```bash
+cd /path/to/NexAU
+export E2B_API_URL="https://hk-prod-e2b.xiaobei.top"
+export E2B_API_KEY="your_key"
+export E2B_DOMAIN="hk-prod-e2b.xiaobei.top"
+HTTP_PROXY="" uv run python scripts/demo_cc_agent.py
+```
+
+脚本源码：`scripts/demo_cc_agent.py`
+Agent 定义：`examples/cc_agent/`
+
+### 方式 B：本地工作区（无 E2B，跳过 run_code_tool）
 
 脚本会自动创建测试工作区 `/tmp/nexau_perm_test/workspace`（含 `src/main.py`、`.env`、`data.txt`）。
 
@@ -22,24 +35,23 @@ cd /path/to/NexAU
 HTTP_PROXY="" uv run python scripts/demo_permission_full.py
 ```
 
-脚本源码：`scripts/demo_permission_full.py`，使用全部内置工具 + 下述权限配置。
+脚本源码：`scripts/demo_permission_full.py`
 
-### 2. 权限规则配置（脚本中预设）
+### 权限规则配置
 
 | 工具 | permissions 配置 | 预期行为 |
 |------|-----------------|---------|
 | read_file | `None`（无配置） | 自动放行 |
-| write_file | `{allow: ["/tmp/nexau_perm_test/workspace/src/**"], deny: [".env"]}` | src/ 下放行，.env 拒绝，其余 ask |
-| replace | `{allow: ["/tmp/nexau_perm_test/workspace/src/**"], deny: [".env"]}` | 同上 |
-| apply_patch | `{allow: ["/tmp/nexau_perm_test/workspace/src/**"], deny: [".env"]}` | 同上 |
-| glob | `None` | 自动放行 |
+| write_file | `{allow: [], deny: [".env", "~/.ssh/**", "*.pem", "*.key"]}` | 敏感文件拒绝，其余 ask |
+| replace | 同 write_file | 同上 |
+| apply_patch | 同 write_file | 同上 |
 | list_directory | `None` | 自动放行 |
 | search_file_content | `None` | 自动放行 |
 | read_many_files | `None` | 自动放行 |
-| run_shell_command | `{allow: ["python"], deny: ["rm", "sudo"]}` | python 放行，rm/sudo 拒绝，只读命令白名单放行，其余 ask |
-| web_fetch | `{allow: ["github.com", "*.github.com"], deny: ["evil.com"]}` | github 放行，evil.com 拒绝，其余 ask |
+| run_shell_command | `{allow: [], deny: ["rm", "sudo", "chmod", "chown", "dd"]}` | 只读命令白名单放行，deny 拒绝，其余 ask |
+| run_code_tool | `{allow: [], deny: []}` | 每次 ask（需要 E2B 沙箱） |
+| web_fetch | `{allow: [], deny: []}` | 每次 ask |
 | google_web_search | `None` | 自动放行 |
-| run_code_tool | `{allow: [], deny: []}` | 每次 ask |
 
 ---
 
@@ -332,11 +344,53 @@ You: 抓取 https://example.com
 
 ---
 
-### Phase 5：持久化规则验证
+### Phase 5：代码执行工具 — 验证 ask 行为（需要 E2B）
+
+**目标**：`run_code_tool` 配置 `{allow: [], deny: []}` → 每次执行都 ask。
+
+#### T5.1 run_code_tool — ask
+
+**操作**：
+```
+You: 用 run_code_tool 执行 print(1+1)
+```
+
+**验证**：
+- [ ] 弹出权限请求：`允许执行代码吗?`
+- [ ] 输入 `allow` → 执行成功，返回 `2`
+- [ ] Langfuse trace 中 `Tool: run_code_tool` span 正常
+
+#### T5.2 run_code_tool — deny
+
+**操作**：
+```
+You: 用 run_code_tool 执行 import os; print(os.listdir('/'))
+```
+
+**验证**：
+- [ ] 弹出权限请求
+- [ ] 输入 `deny` → 代码未执行
+- [ ] Agent 报告被拒绝
+
+#### T5.3 run_code_tool — allow 后持久化
+
+**操作**（接 T5.1，假设用了 `allow`）：
+```
+You: 再用 run_code_tool 执行 print('hello')
+```
+
+**验证**：
+- [ ] **自动放行**（上次 allow 写入了 `code_execution` 到 DB）
+- [ ] 返回 `hello`
+- [ ] 无权限弹窗
+
+---
+
+### Phase 6：持久化规则验证
 
 **目标**：`allow` 决策写入 DB 后，同 permission_key 后续自动放行。
 
-#### T5.1 allow_once 不持久化
+#### T6.1 allow_once 不持久化
 
 **操作**（接 Phase 4 T4.4，假设用了 `allow_once`）：
 ```
@@ -346,7 +400,7 @@ You: 再次抓取 https://example.com
 **验证**：
 - [ ] **再次弹窗**（`allow_once` 不写入 DB）
 
-#### T5.2 allow 持久化
+#### T6.2 allow 持久化
 
 **操作**（接 Phase 3 T3.8，假设用了 `allow`）：
 ```
@@ -359,11 +413,11 @@ You: 再次执行 curl https://example.com
 
 ---
 
-### Phase 6：混合并行工具调用
+### Phase 7：混合并行工具调用
 
 **目标**：一轮内多个工具同时调用，各自独立判定。
 
-#### T6.1 三工具并行（allow + ask + deny）
+#### T7.1 三工具并行（allow + ask + deny）
 
 **操作**：
 ```
@@ -379,7 +433,7 @@ You: 同时做三件事：
 - [ ] run_shell_command → 立即拒绝（`rm` 在 deny 规则中）
 - [ ] Agent 报告：读取成功、写入待授权、删除被拒绝
 
-#### T6.2 resolve 后 resume
+#### T7.2 resolve 后 resume
 
 **操作**：
 ```
@@ -393,11 +447,11 @@ You: 同时做三件事：
 
 ---
 
-### Phase 7：Session 工具 — 验证自动放行
+### Phase 8：Session 工具 — 验证自动放行
 
 **目标**：会话级工具无权限检查。
 
-#### T7.1 write_todos
+#### T8.1 write_todos
 
 **操作**：
 ```
@@ -408,7 +462,7 @@ You: 创建待办事项：1. 写单测 2. 代码审查
 - [ ] 自动放行
 - [ ] 待办列表创建成功
 
-#### T7.2 save_memory
+#### T8.2 save_memory
 
 **操作**：
 ```
@@ -469,9 +523,10 @@ print(rules)  # 应包含用户 allow 过的命令
 | Phase 2 全部 | 路径 allow/ask/deny 三态正确 |
 | Phase 3 全部 | 只读白名单放行 + deny 拒绝 + 未知 ask |
 | Phase 4 全部 | 域名 allow/deny/ask 三态正确 |
-| Phase 5 全部 | allow 持久化、allow_once 不持久化 |
-| Phase 6 全部 | 并行混合判定 + resume 正确 |
-| Phase 7 全部 | 会话工具无弹窗 |
+| Phase 5 全部 | 代码执行 ask + allow 持久化（需 E2B） |
+| Phase 6 全部 | allow 持久化、allow_once 不持久化 |
+| Phase 7 全部 | 并行混合判定 + resume 正确 |
+| Phase 8 全部 | 会话工具无弹窗 |
 | 无回归 | 整个过程中无未预期的异常或崩溃 |
 | Langfuse | 所有 trace 可见，无丢失 |
 
@@ -479,12 +534,20 @@ print(rules)  # 应包含用户 allow 过的命令
 
 ## 附录：测试脚本说明
 
-**`scripts/demo_permission_full.py`** — 完整内置工具的交互式测试脚本。
+### `scripts/demo_cc_agent.py`（推荐）
 
-与 `scripts/demo_permission.py` 的区别：
-- 注册全部内置工具（read_file, write_file, replace, apply_patch, list_directory, search_file_content, read_many_files, run_shell_command, WebFetch, WebSearch）
-- 为写入类工具配置路径级 allow/deny 规则
-- 为 shell 工具配置只读白名单 + 命令级 allow/deny
-- 为 web_fetch 配置域名级 allow/deny
+CC 对齐 agent 的完整交互式测试脚本，使用 E2B 沙箱。
+
+- 注册全部 15 个内置工具（含 run_code_tool）
+- CC 对齐权限：只读自动放行、写入 ask（敏感文件 deny）、shell 只读白名单、代码执行 ask、域名 ask
+- 需要 E2B 环境变量：`E2B_API_URL`、`E2B_API_KEY`、`E2B_DOMAIN`
+- Agent 定义：`examples/cc_agent/`
+- Langfuse trace name: `cc_agent_permission_test`
+
+### `scripts/demo_permission_full.py`
+
+本地工作区版测试脚本，不需要 E2B（但不含 run_code_tool）。
+
+- 注册 10 个内置工具（不含 run_code_tool、ask_user 等会话工具）
 - 自动创建测试工作区 `/tmp/nexau_perm_test/workspace`
 - Langfuse trace name: `permission_full_test`
