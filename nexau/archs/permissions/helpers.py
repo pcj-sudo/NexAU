@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 import shlex
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -107,46 +108,78 @@ def check_path_permission(ctx: FrameworkContext, path: str) -> None:
     )
 
 
-def check_shell_permission(ctx: FrameworkContext, command: str) -> None:
-    """命令专用三态检查。
+_SHELL_SPLIT_RE = re.compile(r"\s*(?:\|\||&&|[|;])\s*")
 
-    RFC-0019: 内置 shell helper
 
-    使用 shlex 解析出首词做精确匹配。
-    CC 对齐: 只读命令（ls, cat, git log 等）无条件放行。
-    供 run_shell_command 使用。
-    """
-    # 1. "**" 通配符 = 无条件放行
-    if _WILDCARD in ctx.allow_rules:
-        return
+def _check_single_command(
+    ctx: FrameworkContext,
+    tokens: list[str],
+) -> str | None:
+    """Check one sub-command. Return None=allow, "ask"=ask, raises on deny."""
+    head = tokens[0] if tokens else ""
+    if not head:
+        return None
 
-    # 2. 解析首词
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        tokens = command.split()
-    head = tokens[0] if tokens else command
-
-    # 3. CC 对齐: 只读命令白名单 — 无条件放行（deny 规则仍可覆盖）
+    # deny 优先（可覆盖只读白名单）
     if head in ctx.deny_rules:
         raise PermissionDenied(
             reason=f"命令 {head} 被禁止",
             permission_key=head,
         )
+    # 只读白名单
     if head in _READONLY_COMMANDS:
-        return
+        return None
     if head == "git" and len(tokens) > 1 and tokens[1] in _READONLY_GIT_SUBCOMMANDS:
-        return
-
-    # 4. allow 匹配
+        return None
+    # allow 规则
     if head in ctx.allow_rules:
+        return None
+    # 无命中 → ask
+    return "ask"
+
+
+def check_shell_permission(ctx: FrameworkContext, command: str) -> None:
+    """命令专用三态检查。
+
+    RFC-0019: 内置 shell helper
+
+    CC 对齐: 按 ``|``, ``&&``, ``||``, ``;`` 分割命令链，对每个子命令
+    分别做 deny → 只读白名单 → allow → ask 检查。任何一个子命令触发
+    deny 则整条拒绝，任何一个触发 ask 则整条 ask。
+    供 run_shell_command 使用。
+    """
+    # "**" 通配符 = 无条件放行
+    if _WILDCARD in ctx.allow_rules:
         return
 
-    # 5. 无命中 → ask
-    raise AskPermission(
-        prompt=f"允许执行 {command} 吗?",
-        permission_key=head,
-    )
+    # 按管道/链式操作符拆分子命令
+    sub_commands = _SHELL_SPLIT_RE.split(command)
+
+    need_ask = False
+    first_ask_head = ""
+
+    for sub in sub_commands:
+        sub = sub.strip()
+        if not sub:
+            continue
+        try:
+            tokens = shlex.split(sub)
+        except ValueError:
+            tokens = sub.split()
+        if not tokens:
+            continue
+
+        # _check_single_command 内部会 raise PermissionDenied
+        result = _check_single_command(ctx, tokens)
+        if result == "ask" and not need_ask:
+            need_ask = True
+            first_ask_head = tokens[0]
+
+    if need_ask:
+        raise AskPermission(
+            prompt=f"允许执行 {command} 吗?",
+            permission_key=first_ask_head,
+        )
 
 
 def check_url_permission(ctx: FrameworkContext, url: str) -> None:
