@@ -200,11 +200,7 @@ async def main() -> None:
         session_id=session_id,
     )
 
-    sandbox = agent.sandbox_manager.instance
-    if sandbox is None:
-        print("ERROR: E2B sandbox failed to start.")
-        sys.exit(1)
-    print(f"E2B sandbox ready: {sandbox.sandbox_id}")
+    print(f"E2B sandbox will start lazily on first tool call.")
     print(f"Working directory: {e2b_config.work_dir}")
 
     # ── Helper: check and resolve pending permissions ──
