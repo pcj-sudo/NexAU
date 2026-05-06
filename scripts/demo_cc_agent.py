@@ -98,13 +98,16 @@ def _build_tools() -> list[Tool]:
     """Build all CC-aligned tools with permission configurations."""
     from nexau.archs.tool.builtin.file_tools import (
         apply_patch,
+        glob,
         list_directory,
         read_file,
         read_many_files,
+        read_visual_file,
         replace,
         search_file_content,
         write_file,
     )
+    from nexau.archs.tool.builtin.multiedit_tool import multiedit_tool
     from nexau.archs.tool.builtin.run_code_tool import run_code_tool
     from nexau.archs.tool.builtin.shell_tools import run_shell_command
     from nexau.archs.tool.builtin.web_tools import google_web_search, web_fetch
@@ -115,6 +118,8 @@ def _build_tools() -> list[Tool]:
 
     tools.append(Tool.from_yaml(str(TOOLS_DIR / "read_file.tool.yaml"), binding=read_file))
     tools.append(Tool.from_yaml(str(TOOLS_DIR / "read_many_files.tool.yaml"), binding=read_many_files))
+    tools.append(Tool.from_yaml(str(TOOLS_DIR / "read_visual_file.tool.yaml"), binding=read_visual_file))
+    tools.append(Tool.from_yaml(str(TOOLS_DIR / "glob.tool.yaml"), binding=glob))
     tools.append(Tool.from_yaml(str(TOOLS_DIR / "list_directory.tool.yaml"), binding=list_directory))
     tools.append(Tool.from_yaml(str(TOOLS_DIR / "search_file_content.tool.yaml"), binding=search_file_content))
     tools.append(Tool.from_yaml(str(TOOLS_DIR / "WebSearch.tool.yaml"), binding=google_web_search))
@@ -129,6 +134,7 @@ def _build_tools() -> list[Tool]:
     tools.append(Tool.from_yaml(str(TOOLS_DIR / "write_file.tool.yaml"), binding=write_file, permissions=file_write_permissions))
     tools.append(Tool.from_yaml(str(TOOLS_DIR / "replace.tool.yaml"), binding=replace, permissions=file_write_permissions))
     tools.append(Tool.from_yaml(str(TOOLS_DIR / "apply_patch.tool.yaml"), binding=apply_patch, permissions=file_write_permissions))
+    tools.append(Tool.from_yaml(str(TOOLS_DIR / "multiedit_tool.tool.yaml"), binding=multiedit_tool, permissions=file_write_permissions))
 
     # ── Shell: readonly whitelist auto-allow + command-level deny ──
 
@@ -156,6 +162,9 @@ def _build_tools() -> list[Tool]:
         binding=web_fetch,
         permissions={"allow": [], "deny": []},
     ))
+
+    # NOTE: BackgroundTaskManage, sub_agent (call_sub_agent), tool_search,
+    # skill_tool 由框架根据 AgentConfig 自动注册，不需要手动 Tool.from_yaml。
 
     return tools
 

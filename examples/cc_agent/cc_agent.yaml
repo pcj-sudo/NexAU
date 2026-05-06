@@ -22,6 +22,10 @@ llm_config:
 #   permissions.allow / deny → three-state check (allow / ask / deny)
 # ---------------------------------------------------------------------------
 
+sub_agents:
+  - name: explore
+    config_path: sub_agent.yaml
+
 tools:
   # ── Readonly tools: no permissions → unconditional allow ──
 
@@ -32,6 +36,14 @@ tools:
   - name: read_many_files
     yaml_path: ./tools/read_many_files.tool.yaml
     binding: nexau.archs.tool.builtin.file_tools:read_many_files
+
+  - name: read_visual_file
+    yaml_path: ./tools/read_visual_file.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:read_visual_file
+
+  - name: glob
+    yaml_path: ./tools/glob.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:glob
 
   - name: list_directory
     yaml_path: ./tools/list_directory.tool.yaml
@@ -68,6 +80,13 @@ tools:
       allow: []
       deny: [".env", "~/.ssh/**", "**/*.pem", "**/*.key"]
 
+  - name: multiedit_tool
+    yaml_path: ./tools/multiedit_tool.tool.yaml
+    binding: nexau.archs.tool.builtin.multiedit_tool:multiedit_tool
+    permissions:
+      allow: []
+      deny: [".env", "~/.ssh/**", "**/*.pem", "**/*.key"]
+
   # ── Shell: readonly whitelist auto-allow + command-level allow / deny ──
 
   - name: run_shell_command
@@ -76,6 +95,10 @@ tools:
     permissions:
       allow: []
       deny: ["rm", "sudo", "chmod", "chown", "dd", "mkfs", "fdisk"]
+
+  - name: BackgroundTaskManage
+    yaml_path: ./tools/BackgroundTaskManage.tool.yaml
+    binding: nexau.archs.tool.builtin:background_task_manage_tool
 
   # ── Code execution: every call requires permission ──
 
@@ -112,6 +135,10 @@ tools:
   - name: ask_user
     yaml_path: ./tools/ask_user.tool.yaml
     binding: nexau.archs.tool.builtin.session_tools:ask_user
+
+skills:
+  - ./skills/skill-creator
+  - ./skills/template-skill
 
 stop_tools: [complete_task]
 
