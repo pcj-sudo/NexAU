@@ -57,44 +57,44 @@ tools:
     yaml_path: ./tools/WebSearch.tool.yaml
     binding: nexau.archs.tool.builtin.web_tools:google_web_search
 
-  # ── File write tools: path-level allow / deny ──
+  # ── File write tools: path-level, all ask (CC-aligned: no hardcoded deny) ──
 
   - name: write_file
     yaml_path: ./tools/write_file.tool.yaml
     binding: nexau.archs.tool.builtin.file_tools:write_file
     permissions:
       allow: []
-      deny: [".env", "~/.ssh/**", "**/*.pem", "**/*.key"]
+      deny: []
 
   - name: replace
     yaml_path: ./tools/replace.tool.yaml
     binding: nexau.archs.tool.builtin.file_tools:replace
     permissions:
       allow: []
-      deny: [".env", "~/.ssh/**", "**/*.pem", "**/*.key"]
+      deny: []
 
   - name: apply_patch
     yaml_path: ./tools/apply_patch.tool.yaml
     binding: nexau.archs.tool.builtin.file_tools:apply_patch
     permissions:
       allow: []
-      deny: [".env", "~/.ssh/**", "**/*.pem", "**/*.key"]
+      deny: []
 
   - name: multiedit_tool
     yaml_path: ./tools/multiedit_tool.tool.yaml
     binding: nexau.archs.tool.builtin.multiedit_tool:multiedit_tool
     permissions:
       allow: []
-      deny: [".env", "~/.ssh/**", "**/*.pem", "**/*.key"]
+      deny: []
 
-  # ── Shell: readonly whitelist auto-allow + command-level allow / deny ──
+  # ── Shell: readonly whitelist auto-allow, all else ask (CC-aligned: no hardcoded deny) ──
 
   - name: run_shell_command
     yaml_path: ./tools/run_shell_command.tool.yaml
     binding: nexau.archs.tool.builtin.shell_tools:run_shell_command
     permissions:
       allow: []
-      deny: ["rm", "sudo", "chmod", "chown", "dd", "mkfs", "fdisk"]
+      deny: []
 
   - name: BackgroundTaskManage
     yaml_path: ./tools/BackgroundTaskManage.tool.yaml

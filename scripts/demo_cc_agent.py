@@ -126,25 +126,19 @@ def _build_tools() -> list[Tool]:
 
     # ── File write tools: path-level allow / deny ──
 
-    file_write_permissions = {
-        "allow": [],
-        "deny": [".env", "~/.ssh/**", "**/*.pem", "**/*.key"],
-    }
+    empty_permissions = {"allow": [], "deny": []}
 
-    tools.append(Tool.from_yaml(str(TOOLS_DIR / "write_file.tool.yaml"), binding=write_file, permissions=file_write_permissions))
-    tools.append(Tool.from_yaml(str(TOOLS_DIR / "replace.tool.yaml"), binding=replace, permissions=file_write_permissions))
-    tools.append(Tool.from_yaml(str(TOOLS_DIR / "apply_patch.tool.yaml"), binding=apply_patch, permissions=file_write_permissions))
-    tools.append(Tool.from_yaml(str(TOOLS_DIR / "multiedit_tool.tool.yaml"), binding=multiedit_tool, permissions=file_write_permissions))
+    tools.append(Tool.from_yaml(str(TOOLS_DIR / "write_file.tool.yaml"), binding=write_file, permissions=empty_permissions))
+    tools.append(Tool.from_yaml(str(TOOLS_DIR / "replace.tool.yaml"), binding=replace, permissions=empty_permissions))
+    tools.append(Tool.from_yaml(str(TOOLS_DIR / "apply_patch.tool.yaml"), binding=apply_patch, permissions=empty_permissions))
+    tools.append(Tool.from_yaml(str(TOOLS_DIR / "multiedit_tool.tool.yaml"), binding=multiedit_tool, permissions=empty_permissions))
 
-    # ── Shell: readonly whitelist auto-allow + command-level deny ──
+    # ── Shell: readonly whitelist auto-allow, all else ask ──
 
     tools.append(Tool.from_yaml(
         str(TOOLS_DIR / "run_shell_command.tool.yaml"),
         binding=run_shell_command,
-        permissions={
-            "allow": [],
-            "deny": ["rm", "sudo", "chmod", "chown", "dd", "mkfs", "fdisk"],
-        },
+        permissions=empty_permissions,
     ))
 
     # ── Code execution: every call ask ──
@@ -261,24 +255,26 @@ async def main() -> None:
     print("CC-Aligned Agent — Full Permission Test (E2B Sandbox)")
     print("=" * 60)
     print()
-    print("Tools (15):")
-    print("  Readonly (auto-allow):  read_file, read_many_files, list_directory,")
-    print("                          search_file_content, web_search")
-    print("  File write (path ask):  write_file, replace, apply_patch")
-    print(f"                          deny: .env, ~/.ssh/**, *.pem, *.key")
-    print("  Shell (whitelist+deny): run_shell_command")
-    print("                          deny: rm, sudo, chmod, chown, dd, mkfs, fdisk")
+    print("Tools (19 YAML + 3 framework-auto):")
+    print("  Readonly (auto-allow):  read_file, read_many_files, read_visual_file,")
+    print("                          glob, list_directory, search_file_content, web_search")
+    print("  File write (all ask):   write_file, replace, apply_patch, multiedit_tool")
+    print("  Shell (whitelist+ask):  run_shell_command  (readonly cmds auto, rest ask)")
+    print("  Shell helper:           BackgroundTaskManage")
     print("  Code exec (always ask): run_code_tool")
     print("  Web fetch (domain ask): web_fetch")
     print("  Session (auto-allow):   save_memory, write_todos, complete_task, ask_user")
+    print("  Framework-auto:         sub_agent (explore), tool_search, skill_tool")
+    print()
+    print("CC-aligned: no hardcoded deny — user decides via allow/deny responses.")
     print()
     print("Suggested tests:")
     print("  1. 列出 /home/user 目录                        (readonly → auto)")
     print("  2. 创建 /home/user/hello.py 写 print('hi')    (write → ask)")
     print("  3. 用 run_code_tool 执行 print(1+1)           (code → ask)")
     print("  4. 执行 ls -la /home/user                      (shell readonly → auto)")
-    print("  5. 执行 rm /home/user/hello.py                 (shell deny → blocked)")
-    print("  6. 执行 python hello.py                        (shell unknown → ask)")
+    print("  5. 执行 rm /home/user/hello.py                 (shell → ask)")
+    print("  6. 执行 python hello.py                        (shell → ask)")
     print("  7. 抓取 https://example.com                    (web → ask)")
     print("  8. 同时: 读文件 + 写文件 + rm 文件             (parallel mixed)")
     print()
