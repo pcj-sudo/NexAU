@@ -1,18 +1,19 @@
-"""Interactive demo for CC-aligned agent with E2B sandbox + RFC-0019 permissions.
+"""Interactive demo for CC-aligned agent with RFC-0019 permissions.
 
 Usage:
-    # Set E2B credentials
+    # Local mode (default): runs tools on your local machine
+    uv run python scripts/demo_cc_agent.py
+
+    # E2B mode: runs file/shell tools in remote sandbox
     export E2B_API_URL="https://hk-prod-e2b.xiaobei.top"
     export E2B_API_KEY="your_key"
     export E2B_DOMAIN="hk-prod-e2b.xiaobei.top"
+    uv run python scripts/demo_cc_agent.py --e2b
 
-    # Run
-    HTTP_PROXY="" uv run python scripts/demo_cc_agent.py
-
-Full tool list (15 tools, CC-aligned permissions):
-  - Readonly (auto-allow): read_file, read_many_files, list_directory,
-    search_file_content, web_search
-  - File write (path-level): write_file, replace, apply_patch
+Full tool list (19 YAML + 3 framework-auto, CC-aligned permissions):
+  - Readonly (auto-allow): read_file, read_many_files, read_visual_file,
+    list_directory, glob, search_file_content, web_search
+  - File write (path-level): write_file, replace, apply_patch, multiedit_tool
   - Shell (readonly whitelist + command-level): run_shell_command
   - Code execution (every call ask): run_code_tool
   - Web fetch (domain-level): web_fetch
@@ -37,7 +38,7 @@ from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent import Agent
 from nexau.archs.main_sub.config import AgentConfig
 from nexau.archs.permissions.types import PendingPermissionsError
-from nexau.archs.sandbox.base_sandbox import E2BSandboxConfig
+from nexau.archs.sandbox.base_sandbox import E2BSandboxConfig, LocalSandboxConfig
 from nexau.archs.session import SessionManager
 from nexau.archs.session.orm import InMemoryDatabaseEngine
 from nexau.archs.tool.tool import Tool
@@ -53,7 +54,7 @@ if TYPE_CHECKING:
 TOOLS_DIR = Path(__file__).resolve().parent.parent / "examples" / "cc_agent" / "tools"
 
 SYSTEM_PROMPT = """\
-You are a coding assistant with access to a sandboxed development environment.
+You are a coding assistant with access to a development environment.
 
 RULES:
 - When asked to do multiple things, call ALL tools in ONE response.
@@ -65,11 +66,15 @@ Working directory: {work_dir}
 """
 
 # ---------------------------------------------------------------------------
-# E2B sandbox config
+# Sandbox config
 # ---------------------------------------------------------------------------
 
 
-def _build_e2b_config() -> E2BSandboxConfig:
+def _build_sandbox_config(use_e2b: bool) -> LocalSandboxConfig | E2BSandboxConfig:
+    if not use_e2b:
+        work_dir = os.getenv("SANDBOX_WORK_DIR", os.getcwd())
+        return LocalSandboxConfig(work_dir=work_dir)
+
     api_key = os.getenv("E2B_API_KEY")
     if not api_key:
         print("ERROR: E2B_API_KEY not set.")
@@ -82,7 +87,7 @@ def _build_e2b_config() -> E2BSandboxConfig:
         type="e2b",
         api_key=api_key,
         api_url=os.getenv("E2B_API_URL") or None,
-        template=os.getenv("E2B_TEMPLATE", "base"),
+        template=os.getenv("E2B_TEMPLATE", "test"),
         timeout=int(os.getenv("E2B_TIMEOUT", "300")),
         work_dir=os.getenv("E2B_WORK_DIR", "/home/user"),
         metadata={"example": "cc_agent", "launcher": "demo_cc_agent.py"},
@@ -96,6 +101,7 @@ def _build_e2b_config() -> E2BSandboxConfig:
 
 def _build_tools() -> list[Tool]:
     """Build all CC-aligned tools with permission configurations."""
+    from nexau.archs.tool.builtin import background_task_manage_tool
     from nexau.archs.tool.builtin.file_tools import (
         apply_patch,
         glob,
@@ -109,6 +115,12 @@ def _build_tools() -> list[Tool]:
     )
     from nexau.archs.tool.builtin.multiedit_tool import multiedit_tool
     from nexau.archs.tool.builtin.run_code_tool import run_code_tool
+    from nexau.archs.tool.builtin.session_tools import (
+        ask_user,
+        complete_task,
+        save_memory,
+        write_todos,
+    )
     from nexau.archs.tool.builtin.shell_tools import run_shell_command
     from nexau.archs.tool.builtin.web_tools import google_web_search, web_fetch
 
@@ -157,8 +169,22 @@ def _build_tools() -> list[Tool]:
         permissions={"allow": [], "deny": []},
     ))
 
-    # NOTE: BackgroundTaskManage, sub_agent (call_sub_agent), tool_search,
-    # skill_tool 由框架根据 AgentConfig 自动注册，不需要手动 Tool.from_yaml。
+    # ── Shell helper: no permissions → auto-allow ──
+
+    tools.append(Tool.from_yaml(
+        str(TOOLS_DIR / "BackgroundTaskManage.tool.yaml"),
+        binding=background_task_manage_tool,
+    ))
+
+    # ── Session tools: no permissions → auto-allow ──
+
+    tools.append(Tool.from_yaml(str(TOOLS_DIR / "save_memory.tool.yaml"), binding=save_memory))
+    tools.append(Tool.from_yaml(str(TOOLS_DIR / "write_todos.tool.yaml"), binding=write_todos))
+    tools.append(Tool.from_yaml(str(TOOLS_DIR / "complete_task.tool.yaml"), binding=complete_task))
+    tools.append(Tool.from_yaml(str(TOOLS_DIR / "ask_user.tool.yaml"), binding=ask_user))
+
+    # NOTE: sub_agent (call_sub_agent), tool_search, skill_tool
+    # 由框架根据 AgentConfig 自动注册。
 
     return tools
 
@@ -168,14 +194,31 @@ def _build_tools() -> list[Tool]:
 # ---------------------------------------------------------------------------
 
 
+def _build_mcp_servers(work_dir: str) -> list[dict[str, object]]:
+    """Build MCP server configs (CC-aligned: server 级 always-ask)."""
+    return [
+        {
+            "name": "filesystem",
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", work_dir],
+            "timeout": 30,
+            "permissions": {"allow": [], "deny": []},
+        },
+    ]
+
+
 async def main() -> None:
-    e2b_config = _build_e2b_config()
+    use_e2b = "--e2b" in sys.argv
+    use_mcp = "--mcp" in sys.argv
+    sandbox_config = _build_sandbox_config(use_e2b)
 
     engine = InMemoryDatabaseEngine()
     sm = SessionManager(engine=engine)
     await sm.setup_models()
 
     tools = _build_tools()
+    mcp_servers = _build_mcp_servers(sandbox_config.work_dir) if use_mcp else []
     user_id = "test_user"
     session_id = "cc_agent_test"
 
@@ -185,11 +228,12 @@ async def main() -> None:
 
     config = AgentConfig(
         name="cc_agent_permission_test",
-        system_prompt=SYSTEM_PROMPT.format(work_dir=e2b_config.work_dir),
+        system_prompt=SYSTEM_PROMPT.format(work_dir=sandbox_config.work_dir),
         llm_config=LLMConfig(temperature=0),
         tools=tools,
+        mcp_servers=mcp_servers,
         max_iterations=15,
-        sandbox_config=e2b_config,
+        sandbox_config=sandbox_config,
         tracers=[LangfuseTracer()],
     )
 
@@ -200,8 +244,9 @@ async def main() -> None:
         session_id=session_id,
     )
 
-    print(f"E2B sandbox will start lazily on first tool call.")
-    print(f"Working directory: {e2b_config.work_dir}")
+    mode = "E2B sandbox" if use_e2b else "Local"
+    print(f"Mode: {mode}")
+    print(f"Working directory: {sandbox_config.work_dir}")
 
     # ── Helper: check and resolve pending permissions ──
 
@@ -246,12 +291,20 @@ async def main() -> None:
 
     # ── Print header ──
 
+    # ── Discover MCP tools (registered during Agent.create) ──
+    mcp_tool_names = [
+        t.name for t in agent._tool_registry.compute_eager_tools()
+        if t.name.startswith("mcp__")
+    ]
+
     print()
     print("=" * 60)
-    print("CC-Aligned Agent — Full Permission Test (E2B Sandbox)")
+    print(f"CC-Aligned Agent — Full Permission Test ({mode})")
     print("=" * 60)
     print()
-    print("Tools (19 YAML + 3 framework-auto):")
+    yaml_count = len(tools)
+    mcp_count = len(mcp_tool_names)
+    print(f"Tools ({yaml_count} YAML + {mcp_count} MCP + 3 framework-auto):")
     print("  Readonly (auto-allow):  read_file, read_many_files, read_visual_file,")
     print("                          glob, list_directory, search_file_content, web_search")
     print("  File write (all ask):   write_file, replace, apply_patch, multiedit_tool")
@@ -261,18 +314,21 @@ async def main() -> None:
     print("  Web fetch (domain ask): web_fetch")
     print("  Session (auto-allow):   save_memory, write_todos, complete_task, ask_user")
     print("  Framework-auto:         sub_agent (explore), tool_search, skill_tool")
+    if mcp_tool_names:
+        print(f"  MCP (always ask):       {', '.join(mcp_tool_names)}")
     print()
     print("CC-aligned: no hardcoded deny — user decides via allow/deny responses.")
+    work_dir = sandbox_config.work_dir
     print()
     print("Suggested tests:")
-    print("  1. 列出 /home/user 目录                        (readonly → auto)")
-    print("  2. 创建 /home/user/hello.py 写 print('hi')    (write → ask)")
-    print("  3. 用 run_code_tool 执行 print(1+1)           (code → ask)")
-    print("  4. 执行 ls -la /home/user                      (shell readonly → auto)")
-    print("  5. 执行 rm /home/user/hello.py                 (shell → ask)")
-    print("  6. 执行 python hello.py                        (shell → ask)")
-    print("  7. 抓取 https://example.com                    (web → ask)")
-    print("  8. 同时: 读文件 + 写文件 + rm 文件             (parallel mixed)")
+    print(f"  1. 列出 {work_dir} 目录                        (readonly → auto)")
+    print(f"  2. 创建 {work_dir}/hello.py 写 print('hi')    (write → ask)")
+    print(f"  3. 用 run_code_tool 执行 print(1+1)           (code → ask)")
+    print(f"  4. 执行 ls -la {work_dir}                      (shell readonly → auto)")
+    print(f"  5. 执行 rm {work_dir}/hello.py                 (shell → ask)")
+    print(f"  6. 执行 python hello.py                        (shell → ask)")
+    print(f"  7. 抓取 https://example.com                    (web → ask)")
+    print(f"  8. 同时: 读文件 + 写文件 + rm 文件             (parallel mixed)")
     print()
     print("Type 'quit' to exit.")
     print("=" * 60)

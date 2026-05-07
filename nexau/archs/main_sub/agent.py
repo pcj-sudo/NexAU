@@ -1586,7 +1586,11 @@ class Agent:
                         exec_params["sandbox"] = agent_state.get_sandbox()
                         exec_params["ctx"] = tool_ctx
 
-                        result = tool_obj.execute(**exec_params)
+                        # MCPTool 等拥有原生 async 实现的工具必须走 async 路径
+                        if getattr(tool_obj, "_has_native_async_execute", False):
+                            result = await tool_obj.execute_async(**exec_params)
+                        else:
+                            result = tool_obj.execute(**exec_params)
 
                         raw_output = result if isinstance(result, dict) else {"result": result}
                         content_str = str(raw_output)

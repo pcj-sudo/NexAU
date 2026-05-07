@@ -282,6 +282,8 @@ class Executor:
         self._is_idle = False  # True when waiting for messages in team_mode
         self._is_waiting_for_user = False  # True when idle due to ask_user stop tool
         self._last_stop_tool_name: str | None = None  # 最近触发 stop 的工具名
+        self._consecutive_text_only_count: int = 0  # team_mode 连续纯文本回复计数
+        self._has_active_teammates: Callable[[], bool] | None = None  # AgentTeam 注入，判断是否有活跃 teammate
 
     def _wire_middleware_event_emitters(self) -> None:
         """Wire internal middleware emitters to the unified event callback when available."""
@@ -932,6 +934,28 @@ class Executor:
                             force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
                             final_response = stop_tool_result
                             break
+                        # RFC-0002 补丁: 纯文本回复时，若无活跃 teammate 则注入提醒；
+                        # 若有活跃 teammate 则直接进入 _wait_for_messages 等待回信。
+                        if stop_tool_result is None:
+                            has_teammates = self._has_active_teammates() if self._has_active_teammates else False
+                            if not has_teammates:
+                                self._consecutive_text_only_count += 1
+                                if self._consecutive_text_only_count >= 3:
+                                    logger.warning("team_mode: agent produced 3 consecutive text-only responses with no active teammates, auto-exiting")
+                                    force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
+                                    final_response = processed_response
+                                    break
+                                nudge = Message(
+                                    role=Role.USER,
+                                    content=[TextBlock(text=(
+                                        "[System] You responded with text but did not call any tool. "
+                                        "If you are done, you MUST call `finish_team` with a summary. "
+                                        "If you need to do more work, call the appropriate tool."
+                                    ))],
+                                )
+                                messages.append(nudge)
+                                iteration += 1
+                                continue
                         # RFC-0002: team_mode 下无限等待新消息，不设超时。
                         # Leader 需要等待 teammate 完成工作（可能远超 120s），
                         # watchdog 负责检测全员空闲并唤醒 leader。
@@ -961,6 +985,8 @@ class Executor:
                         final_response = processed_response
                         break
 
+                if self.team_mode:
+                    self._consecutive_text_only_count = 0
                 iteration += 1
 
             # Add note if max iterations reached
@@ -1383,6 +1409,8 @@ class Executor:
                 processed_response=processed_response,
             )
 
+        if self.team_mode:
+            self._consecutive_text_only_count = 0
         state.iteration += 1
         return _IterationOutcome.CONTINUE
 
@@ -1470,6 +1498,30 @@ class Executor:
                 state.force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
                 state.final_response = stop_tool_result
                 return _IterationOutcome.BREAK
+
+            # RFC-0002 补丁: 纯文本回复时，若无活跃 teammate 则注入提醒；
+            # 若有活跃 teammate 则直接进入 _wait_for_messages 等待回信。
+            if stop_tool_result is None:
+                has_teammates = self._has_active_teammates() if self._has_active_teammates else False
+                if not has_teammates:
+                    self._consecutive_text_only_count += 1
+                    if self._consecutive_text_only_count >= 3:
+                        logger.warning("team_mode: agent produced 3 consecutive text-only responses with no active teammates, auto-exiting")
+                        state.force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
+                        state.final_response = processed_response
+                        return _IterationOutcome.BREAK
+                    nudge = Message(
+                        role=Role.USER,
+                        content=[TextBlock(text=(
+                            "[System] You responded with text but did not call any tool. "
+                            "If you are done, you MUST call `finish_team` with a summary. "
+                            "If you need to do more work, call the appropriate tool."
+                        ))],
+                    )
+                    state.messages.append(nudge)
+                    state.iteration += 1
+                    return _IterationOutcome.CONTINUE
+
             self._mark_waiting_for_user()
             if isinstance(state.origin_history, HistoryList):
                 state.origin_history.replace_all(state.messages)
