@@ -506,17 +506,19 @@ class Executor:
 
         优先从 DB 加载（包含 config 和 user 两种来源的规则），
         无 session_manager 时 fallback 到 Tool.permissions。
+        permissions=None 的 tool 不参与权限体系，跳过 DB 查询直接放行。
         """
         if self._session_manager and self._user_id and self._session_id:
             cache: dict[str, tuple[list[str], list[str]]] = {}
             for tool in self._tool_registry.compute_eager_tools():
+                if tool.permissions is None:
+                    continue
                 allow, deny = await self._session_manager.load_permission_rules(
                     user_id=self._user_id,
                     session_id=self._session_id,
                     tool_name=tool.name,
                 )
-                if allow or deny or tool.permissions is not None:
-                    cache[tool.name] = (allow, deny)
+                cache[tool.name] = (allow, deny)
             return cache
         return self._build_permission_cache_from_tools()
 
