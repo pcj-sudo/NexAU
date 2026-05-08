@@ -470,7 +470,7 @@ class TestHandleStopConditionAsync:
         ):
             result = await executor._handle_stop_condition_async(
                 state,
-                stop_tool_result=None,
+                stop_tool_result="stopped",
                 processed_response="resp",
             )
 

@@ -102,17 +102,15 @@ def _build_sandbox_config(use_e2b: bool) -> LocalSandboxConfig | E2BSandboxConfi
 def _build_tools() -> list[Tool]:
     """Build all CC-aligned tools with permission configurations."""
     from nexau.archs.tool.builtin import background_task_manage_tool
-    from nexau.archs.tool.builtin.file_tools import (
-        apply_patch,
-        glob,
-        list_directory,
-        read_file,
-        read_many_files,
-        read_visual_file,
-        replace,
-        search_file_content,
-        write_file,
-    )
+    from nexau.archs.tool.builtin.file_tools.apply_patch import apply_patch
+    from nexau.archs.tool.builtin.file_tools.glob_tool import glob
+    from nexau.archs.tool.builtin.file_tools.list_directory import list_directory
+    from nexau.archs.tool.builtin.file_tools.read_file import read_file
+    from nexau.archs.tool.builtin.file_tools.read_many_files import read_many_files
+    from nexau.archs.tool.builtin.file_tools.read_visual_file import read_visual_file
+    from nexau.archs.tool.builtin.file_tools.replace import replace
+    from nexau.archs.tool.builtin.file_tools.search_file_content import search_file_content
+    from nexau.archs.tool.builtin.file_tools.write_file import write_file
     from nexau.archs.tool.builtin.multiedit_tool import multiedit_tool
     from nexau.archs.tool.builtin.run_code_tool import run_code_tool
     from nexau.archs.tool.builtin.session_tools import (
