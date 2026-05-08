@@ -54,8 +54,7 @@ class PendingPermissionsError(Exception):
         self.session_id = session_id
         self.pending = pending
         super().__init__(
-            f"Session {session_id} has {len(pending)} pending permission request(s). "
-            "Resolve all decisions before starting a new run."
+            f"Session {session_id} has {len(pending)} pending permission request(s). Resolve all decisions before starting a new run."
         )
 
 

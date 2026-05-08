@@ -956,8 +956,7 @@ class Executor:
                                 self._consecutive_text_only_count += 1
                                 if self._consecutive_text_only_count >= 3:
                                     logger.warning(
-                                        "team_mode: agent produced 3 consecutive text-only "
-                                        "responses with no active teammates, auto-exiting"
+                                        "team_mode: agent produced 3 consecutive text-only responses with no active teammates, auto-exiting"
                                     )
                                     force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
                                     final_response = processed_response
@@ -1624,14 +1623,12 @@ class Executor:
                 return hook_input.original_response, True, None, current_messages, [], []
 
         assert parsed_response is not None
-        processed_response, should_stop, stop_tool_result, execution_feedbacks, ask_outcomes = (
-            await self._execute_parsed_calls_async(
-                parsed_response,
-                hook_input.agent_state,
-                custom_llm_client_provider=custom_llm_client_provider,
-                framework_context=framework_context,
-                permission_cache=permission_cache,
-            )
+        processed_response, should_stop, stop_tool_result, execution_feedbacks, ask_outcomes = await self._execute_parsed_calls_async(
+            parsed_response,
+            hook_input.agent_state,
+            custom_llm_client_provider=custom_llm_client_provider,
+            framework_context=framework_context,
+            permission_cache=permission_cache,
         )
         return processed_response, should_stop, stop_tool_result, current_messages, execution_feedbacks, ask_outcomes
 
@@ -1817,19 +1814,35 @@ class Executor:
                     )
                     return ("tool", tc, (tc.tool_name, execution_result, False))
             except AskPermission as e:
-                return ("tool", tc, (tc.tool_name, AskOutcome(
-                    tool_call_id=tool_call_id,
-                    tool_name=tc.tool_name,
-                    prompt=e.prompt,
-                    permission_key=e.permission_key,
-                    parameters=converted_params,
-                ), False))
+                return (
+                    "tool",
+                    tc,
+                    (
+                        tc.tool_name,
+                        AskOutcome(
+                            tool_call_id=tool_call_id,
+                            tool_name=tc.tool_name,
+                            prompt=e.prompt,
+                            permission_key=e.permission_key,
+                            parameters=converted_params,
+                        ),
+                        False,
+                    ),
+                )
             except PermissionDenied as e:
-                return ("tool", tc, (tc.tool_name, DenyOutcome(
-                    tool_call_id=tool_call_id,
-                    reason=e.reason,
-                    permission_key=e.permission_key,
-                ), True))
+                return (
+                    "tool",
+                    tc,
+                    (
+                        tc.tool_name,
+                        DenyOutcome(
+                            tool_call_id=tool_call_id,
+                            reason=e.reason,
+                            permission_key=e.permission_key,
+                        ),
+                        True,
+                    ),
+                )
             except Exception as e:
                 return ("tool", tc, (tc.tool_name, str(e), True))
 
@@ -1897,9 +1910,7 @@ class Executor:
                 )
                 should_append_xml = call_obj.source != "structured"
                 if should_append_xml:
-                    tool_results.append(
-                        f"\n<tool_result>\n<tool_name>{tool_name}</tool_name>\n<error>{deny_msg}</error>\n</tool_result>\n"
-                    )
+                    tool_results.append(f"\n<tool_result>\n<tool_name>{tool_name}</tool_name>\n<error>{deny_msg}</error>\n</tool_result>\n")
                 continue
 
             raw_output, llm_tool_output = self._split_tool_outputs(result)
@@ -2408,19 +2419,27 @@ class Executor:
             return (tool_call.tool_name, result, False)
 
         except AskPermission as e:
-            return (tool_call.tool_name, AskOutcome(
-                tool_call_id=tool_call_id,
-                tool_name=tool_call.tool_name,
-                prompt=e.prompt,
-                permission_key=e.permission_key,
-                parameters=converted_params,
-            ), False)
+            return (
+                tool_call.tool_name,
+                AskOutcome(
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_call.tool_name,
+                    prompt=e.prompt,
+                    permission_key=e.permission_key,
+                    parameters=converted_params,
+                ),
+                False,
+            )
         except PermissionDenied as e:
-            return (tool_call.tool_name, DenyOutcome(
-                tool_call_id=tool_call_id,
-                reason=e.reason,
-                permission_key=e.permission_key,
-            ), True)
+            return (
+                tool_call.tool_name,
+                DenyOutcome(
+                    tool_call_id=tool_call_id,
+                    reason=e.reason,
+                    permission_key=e.permission_key,
+                ),
+                True,
+            )
         except Exception as e:
             return tool_call.tool_name, str(e), True
 

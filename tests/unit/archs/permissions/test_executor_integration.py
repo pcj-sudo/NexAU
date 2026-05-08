@@ -29,7 +29,8 @@ Covers:
 from __future__ import annotations
 
 import threading
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -137,7 +138,7 @@ def _default_impl(**kwargs: object) -> dict[str, bool]:
 
 def _make_tool(
     name: str,
-    impl: object = None,
+    impl: Callable[..., Any] | None = None,
     permissions: dict[str, list[str]] | None = None,
 ) -> Tool:
     """Create a test Tool with an optional implementation and permissions."""
@@ -211,7 +212,10 @@ class TestExecuteToolCallSafePermission:
 
         with patch("nexau.archs.main_sub.agent_context.get_context", return_value=None):
             tool_name, result, is_error = executor._execute_tool_call_safe(
-                tc, agent_state, framework_ctx, permission_cache,
+                tc,
+                agent_state,
+                framework_ctx,
+                permission_cache,
             )
 
         assert tool_name == "allowed_tool"
@@ -232,7 +236,10 @@ class TestExecuteToolCallSafePermission:
 
         with patch("nexau.archs.main_sub.agent_context.get_context", return_value=None):
             tool_name, result, is_error = executor._execute_tool_call_safe(
-                tc, agent_state, framework_ctx, permission_cache={},
+                tc,
+                agent_state,
+                framework_ctx,
+                permission_cache={},
             )
 
         assert tool_name == "write_file"
@@ -256,7 +263,10 @@ class TestExecuteToolCallSafePermission:
 
         with patch("nexau.archs.main_sub.agent_context.get_context", return_value=None):
             tool_name, result, is_error = executor._execute_tool_call_safe(
-                tc, agent_state, framework_ctx, permission_cache={},
+                tc,
+                agent_state,
+                framework_ctx,
+                permission_cache={},
             )
 
         assert tool_name == "write_file"
@@ -283,7 +293,10 @@ class TestExecuteToolCallSafePermission:
             patch("nexau.archs.main_sub.agent_context.get_context", return_value=None),
         ):
             executor._execute_tool_call_safe(
-                tc, agent_state, framework_ctx, permission_cache,
+                tc,
+                agent_state,
+                framework_ctx,
+                permission_cache,
             )
 
         mock_ftc.assert_called_once_with(
@@ -305,7 +318,10 @@ class TestExecuteToolCallSafePermission:
             patch("nexau.archs.main_sub.agent_context.get_context", return_value=None),
         ):
             executor._execute_tool_call_safe(
-                tc, agent_state, framework_ctx, None,
+                tc,
+                agent_state,
+                framework_ctx,
+                None,
             )
 
         mock_ftc.assert_not_called()
@@ -325,7 +341,10 @@ class TestExecuteToolCallSafePermission:
             patch("nexau.archs.main_sub.agent_context.get_context", return_value=None),
         ):
             executor._execute_tool_call_safe(
-                tc, agent_state, framework_ctx, permission_cache,
+                tc,
+                agent_state,
+                framework_ctx,
+                permission_cache,
             )
 
         mock_ftc.assert_called_once_with(

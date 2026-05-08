@@ -28,6 +28,9 @@ Uses InMemoryDatabaseEngine + mock LLM to exercise the full lifecycle:
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import pytest
 
 from nexau.archs.permissions.helpers import check_permission
@@ -47,7 +50,7 @@ from nexau.archs.tool.tool import Tool
 
 def _make_tool(
     name: str,
-    impl: object = None,
+    impl: Callable[..., Any] | None = None,
     permissions: dict[str, list[str]] | None = None,
 ) -> Tool:
     def _default_impl(**kwargs: object) -> dict[str, bool]:
@@ -133,7 +136,9 @@ class TestAskResolveAllowLifecycle:
             }
         }
         await sm.update_pending_tool_calls(
-            user_id=user_id, session_id=session_id, pending_tool_calls=pending,
+            user_id=user_id,
+            session_id=session_id,
+            pending_tool_calls=pending,
         )
 
         # 2. Verify pending is stored
@@ -144,7 +149,9 @@ class TestAskResolveAllowLifecycle:
         # 3. Resolve with "allow"
         stored["tc_1"]["decision"] = "allow"
         await sm.update_pending_tool_calls(
-            user_id=user_id, session_id=session_id, pending_tool_calls=stored,
+            user_id=user_id,
+            session_id=session_id,
+            pending_tool_calls=stored,
         )
 
         # 4. Also persist the allow rule
@@ -164,13 +171,17 @@ class TestAskResolveAllowLifecycle:
 
         # 6. Verify allow rule is persisted
         allow_rules, deny_rules = await sm.load_permission_rules(
-            user_id=user_id, session_id=session_id, tool_name="write_file",
+            user_id=user_id,
+            session_id=session_id,
+            tool_name="write_file",
         )
         assert "path:/tmp/out.txt" in allow_rules
 
         # 7. Clear pending (resume complete)
         await sm.update_pending_tool_calls(
-            user_id=user_id, session_id=session_id, pending_tool_calls=None,
+            user_id=user_id,
+            session_id=session_id,
+            pending_tool_calls=None,
         )
         cleared = await sm.get_pending_tool_calls(user_id=user_id, session_id=session_id)
         assert cleared is None
@@ -204,18 +215,24 @@ class TestAskResolveDeny:
             }
         }
         await sm.update_pending_tool_calls(
-            user_id=user_id, session_id=session_id, pending_tool_calls=pending,
+            user_id=user_id,
+            session_id=session_id,
+            pending_tool_calls=pending,
         )
 
         # Resolve with deny (no rule persisted)
         pending["tc_d"]["decision"] = "deny"
         await sm.update_pending_tool_calls(
-            user_id=user_id, session_id=session_id, pending_tool_calls=pending,
+            user_id=user_id,
+            session_id=session_id,
+            pending_tool_calls=pending,
         )
 
         # No allow rule should exist
         allow_rules, deny_rules = await sm.load_permission_rules(
-            user_id=user_id, session_id=session_id, tool_name="run_shell",
+            user_id=user_id,
+            session_id=session_id,
+            tool_name="run_shell",
         )
         assert allow_rules == []
 
@@ -250,14 +267,18 @@ class TestPersistentAllow:
 
         # Load and verify
         allow, deny = await sm.load_permission_rules(
-            user_id=user_id, session_id=session_id, tool_name="write_file",
+            user_id=user_id,
+            session_id=session_id,
+            tool_name="write_file",
         )
         assert "path:/home/*" in allow
         assert deny == []
 
         # Load again to verify persistence
         allow2, _ = await sm.load_permission_rules(
-            user_id=user_id, session_id=session_id, tool_name="write_file",
+            user_id=user_id,
+            session_id=session_id,
+            tool_name="write_file",
         )
         assert "path:/home/*" in allow2
 
@@ -290,18 +311,24 @@ class TestAllowOnce:
             }
         }
         await sm.update_pending_tool_calls(
-            user_id=user_id, session_id=session_id, pending_tool_calls=pending,
+            user_id=user_id,
+            session_id=session_id,
+            pending_tool_calls=pending,
         )
 
         # Resolve with allow_once — do NOT persist rule
         pending["tc_o"]["decision"] = "allow_once"
         await sm.update_pending_tool_calls(
-            user_id=user_id, session_id=session_id, pending_tool_calls=pending,
+            user_id=user_id,
+            session_id=session_id,
+            pending_tool_calls=pending,
         )
 
         # No allow rule should exist
         allow, _ = await sm.load_permission_rules(
-            user_id=user_id, session_id=session_id, tool_name="write_file",
+            user_id=user_id,
+            session_id=session_id,
+            tool_name="write_file",
         )
         assert allow == []
 
@@ -330,11 +357,15 @@ class TestPermissionCacheFromConfig:
         )
 
         await sm.init_permission_rules_from_config(
-            user_id=user_id, session_id=session_id, tools=[tool],
+            user_id=user_id,
+            session_id=session_id,
+            tools=[tool],
         )
 
         allow, deny = await sm.load_permission_rules(
-            user_id=user_id, session_id=session_id, tool_name="guarded_tool",
+            user_id=user_id,
+            session_id=session_id,
+            tool_name="guarded_tool",
         )
         assert set(allow) == {"*.py", "*.txt"}
         assert deny == ["secrets/*"]
@@ -352,11 +383,15 @@ class TestPermissionCacheFromConfig:
         tool = _make_tool("plain_tool", permissions=None)
 
         await sm.init_permission_rules_from_config(
-            user_id=user_id, session_id=session_id, tools=[tool],
+            user_id=user_id,
+            session_id=session_id,
+            tools=[tool],
         )
 
         allow, deny = await sm.load_permission_rules(
-            user_id=user_id, session_id=session_id, tool_name="plain_tool",
+            user_id=user_id,
+            session_id=session_id,
+            tool_name="plain_tool",
         )
         assert allow == []
         assert deny == []

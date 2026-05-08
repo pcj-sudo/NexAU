@@ -29,6 +29,7 @@ Covers:
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -75,7 +76,7 @@ def _default_impl(**kwargs: object) -> dict[str, bool]:
     return {"ok": True}
 
 
-def _make_tool(name: str, impl: object = None) -> Tool:
+def _make_tool(name: str, impl: Callable[..., Any] | None = None) -> Tool:
     if impl is None:
         impl = _default_impl
     return Tool(
@@ -403,7 +404,6 @@ class TestResumePendingToolCalls:
 
         await agent._resume_pending_tool_calls(pending, agent_state, ctx)
 
-
         assert len(agent.history) == 2
         results = {msg.content[0].tool_use_id: msg.content[0].is_error for msg in agent.history}
         assert results["tc_allow"] is False
@@ -467,7 +467,6 @@ class TestResumePendingToolCalls:
         ctx = _make_framework_context()
 
         await agent._resume_pending_tool_calls(pending, agent_state, ctx)
-
 
         assert len(agent.history) == 1
         assert agent.history[0].content[0].is_error is True

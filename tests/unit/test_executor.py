@@ -922,9 +922,7 @@ class TestExecutorXMLCallProcessing:
         )
 
         ctx = make_framework_context(executor)
-        processed, should_stop, result, messages, feedbacks, ask_outcomes = executor._process_xml_calls(
-            hook_input, framework_context=ctx
-        )
+        processed, should_stop, result, messages, feedbacks, ask_outcomes = executor._process_xml_calls(hook_input, framework_context=ctx)
 
         assert processed == "Just a plain response"
         assert should_stop is True

@@ -138,7 +138,7 @@ def _build_tools() -> list[Tool]:
 
     # ── File write tools: path-level allow / deny ──
 
-    empty_permissions = {"allow": [], "deny": []}
+    empty_permissions: dict[str, list[str]] = {"allow": [], "deny": []}
 
     tools.append(Tool.from_yaml(str(TOOLS_DIR / "write_file.tool.yaml"), binding=write_file, permissions=empty_permissions))
     tools.append(Tool.from_yaml(str(TOOLS_DIR / "replace.tool.yaml"), binding=replace, permissions=empty_permissions))
@@ -147,34 +147,42 @@ def _build_tools() -> list[Tool]:
 
     # ── Shell: readonly whitelist auto-allow, all else ask ──
 
-    tools.append(Tool.from_yaml(
-        str(TOOLS_DIR / "run_shell_command.tool.yaml"),
-        binding=run_shell_command,
-        permissions=empty_permissions,
-    ))
+    tools.append(
+        Tool.from_yaml(
+            str(TOOLS_DIR / "run_shell_command.tool.yaml"),
+            binding=run_shell_command,
+            permissions=empty_permissions,
+        )
+    )
 
     # ── Code execution: every call ask ──
 
-    tools.append(Tool.from_yaml(
-        str(TOOLS_DIR / "run_code_tool.tool.yaml"),
-        binding=run_code_tool,
-        permissions={"allow": [], "deny": []},
-    ))
+    tools.append(
+        Tool.from_yaml(
+            str(TOOLS_DIR / "run_code_tool.tool.yaml"),
+            binding=run_code_tool,
+            permissions={"allow": [], "deny": []},
+        )
+    )
 
     # ── Web fetch: domain-level, start empty (every domain asks) ──
 
-    tools.append(Tool.from_yaml(
-        str(TOOLS_DIR / "WebFetch.tool.yaml"),
-        binding=web_fetch,
-        permissions={"allow": [], "deny": []},
-    ))
+    tools.append(
+        Tool.from_yaml(
+            str(TOOLS_DIR / "WebFetch.tool.yaml"),
+            binding=web_fetch,
+            permissions={"allow": [], "deny": []},
+        )
+    )
 
     # ── Shell helper: no permissions → auto-allow ──
 
-    tools.append(Tool.from_yaml(
-        str(TOOLS_DIR / "BackgroundTaskManage.tool.yaml"),
-        binding=background_task_manage_tool,
-    ))
+    tools.append(
+        Tool.from_yaml(
+            str(TOOLS_DIR / "BackgroundTaskManage.tool.yaml"),
+            binding=background_task_manage_tool,
+        )
+    )
 
     # ── Session tools: no permissions → auto-allow ──
 
@@ -223,7 +231,9 @@ async def main() -> None:
     session_id = "cc_agent_test"
 
     await sm.init_permission_rules_from_config(
-        user_id=user_id, session_id=session_id, tools=tools,
+        user_id=user_id,
+        session_id=session_id,
+        tools=tools,
     )
 
     config = AgentConfig(
@@ -252,15 +262,13 @@ async def main() -> None:
 
     async def _check_and_resolve_pending() -> bool:
         pending = await sm.get_pending_tool_calls(
-            user_id=user_id, session_id=session_id,
+            user_id=user_id,
+            session_id=session_id,
         )
         if not pending:
             return False
 
-        unresolved = {
-            k: v for k, v in pending.items()
-            if v.get("decision") is None
-        }
+        unresolved = {k: v for k, v in pending.items() if v.get("decision") is None}
         if not unresolved:
             return False
 
@@ -292,10 +300,7 @@ async def main() -> None:
     # ── Print header ──
 
     # ── Discover MCP tools (registered during Agent.create) ──
-    mcp_tool_names = [
-        t.name for t in agent._tool_registry.compute_eager_tools()
-        if t.name.startswith("mcp__")
-    ]
+    mcp_tool_names = [t.name for t in agent._tool_registry.compute_eager_tools() if t.name.startswith("mcp__")]
 
     print()
     print("=" * 60)
@@ -365,6 +370,7 @@ async def main() -> None:
         except Exception as e:
             print(f"\033[31mError: {e}\033[0m")
             import traceback
+
             traceback.print_exc()
 
 

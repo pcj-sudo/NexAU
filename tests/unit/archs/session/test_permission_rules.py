@@ -115,9 +115,7 @@ class TestSessionManagerPermissions:
     def test_load_empty_rules(self, manager: SessionManager) -> None:
         async def run() -> None:
             await manager.setup_models()
-            allow, deny = await manager.load_permission_rules(
-                user_id="u1", session_id="s1", tool_name="shell"
-            )
+            allow, deny = await manager.load_permission_rules(user_id="u1", session_id="s1", tool_name="shell")
             assert allow == []
             assert deny == []
 
@@ -140,9 +138,7 @@ class TestSessionManagerPermissions:
                 rule_content="rm",
                 behavior="deny",
             )
-            allow, deny = await manager.load_permission_rules(
-                user_id="u1", session_id="s1", tool_name="shell"
-            )
+            allow, deny = await manager.load_permission_rules(user_id="u1", session_id="s1", tool_name="shell")
             assert allow == ["ls"]
             assert deny == ["rm"]
 
@@ -163,16 +159,12 @@ class TestSessionManagerPermissions:
                 session_id="s1",
                 tools=[tool, tool_no_perm],
             )
-            allow, deny = await manager.load_permission_rules(
-                user_id="u1", session_id="s1", tool_name="run_shell_command"
-            )
+            allow, deny = await manager.load_permission_rules(user_id="u1", session_id="s1", tool_name="run_shell_command")
             assert set(allow) == {"ls", "cat"}
             assert deny == ["rm"]
 
             # tool without permissions should have no rules
-            allow2, deny2 = await manager.load_permission_rules(
-                user_id="u1", session_id="s1", tool_name="read_file"
-            )
+            allow2, deny2 = await manager.load_permission_rules(user_id="u1", session_id="s1", tool_name="read_file")
             assert allow2 == []
             assert deny2 == []
 
@@ -182,14 +174,10 @@ class TestSessionManagerPermissions:
         async def run() -> None:
             await manager.setup_models()
             # 先创建 session
-            await manager.register_agent(
-                user_id="u1", session_id="s1", agent_name="test"
-            )
+            await manager.register_agent(user_id="u1", session_id="s1", agent_name="test")
 
             # 初始应该是 None
-            pending = await manager.get_pending_tool_calls(
-                user_id="u1", session_id="s1"
-            )
+            pending = await manager.get_pending_tool_calls(user_id="u1", session_id="s1")
             assert pending is None
 
             # 写入 pending
@@ -201,25 +189,17 @@ class TestSessionManagerPermissions:
                     "decision": None,
                 }
             }
-            await manager.update_pending_tool_calls(
-                user_id="u1", session_id="s1", pending_tool_calls=new_pending
-            )
+            await manager.update_pending_tool_calls(user_id="u1", session_id="s1", pending_tool_calls=new_pending)
 
             # 读取
-            loaded = await manager.get_pending_tool_calls(
-                user_id="u1", session_id="s1"
-            )
+            loaded = await manager.get_pending_tool_calls(user_id="u1", session_id="s1")
             assert loaded is not None
             assert "tc_1" in loaded
             assert loaded["tc_1"]["decision"] is None
 
             # 清除
-            await manager.update_pending_tool_calls(
-                user_id="u1", session_id="s1", pending_tool_calls=None
-            )
-            cleared = await manager.get_pending_tool_calls(
-                user_id="u1", session_id="s1"
-            )
+            await manager.update_pending_tool_calls(user_id="u1", session_id="s1", pending_tool_calls=None)
+            cleared = await manager.get_pending_tool_calls(user_id="u1", session_id="s1")
             assert cleared is None
 
         _run(run())
@@ -235,9 +215,7 @@ class TestSessionManagerPermissions:
                     rule_content="ls",
                     behavior="allow",
                 )
-            allow, _ = await manager.load_permission_rules(
-                user_id="u1", session_id="s1", tool_name="shell"
-            )
+            allow, _ = await manager.load_permission_rules(user_id="u1", session_id="s1", tool_name="shell")
             assert allow == ["ls"]
 
         _run(run())

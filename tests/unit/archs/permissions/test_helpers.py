@@ -588,30 +588,22 @@ class TestCheckMcpPermission:
         check_mcp_permission(ctx, "github", "create_issue")
 
     def test_deny_by_tool_key(self) -> None:
-        ctx = FrameworkContext.for_testing(
-            allow_rules=[], deny_rules=["mcp__github__create_issue"]
-        )
+        ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=["mcp__github__create_issue"])
         with pytest.raises(PermissionDenied) as exc_info:
             check_mcp_permission(ctx, "github", "create_issue")
         assert exc_info.value.permission_key == "mcp__github__create_issue"
 
     def test_deny_by_server_key(self) -> None:
-        ctx = FrameworkContext.for_testing(
-            allow_rules=[], deny_rules=["mcp__github"]
-        )
+        ctx = FrameworkContext.for_testing(allow_rules=[], deny_rules=["mcp__github"])
         with pytest.raises(PermissionDenied):
             check_mcp_permission(ctx, "github", "create_issue")
 
     def test_allow_by_tool_key(self) -> None:
-        ctx = FrameworkContext.for_testing(
-            allow_rules=["mcp__github__create_issue"], deny_rules=[]
-        )
+        ctx = FrameworkContext.for_testing(allow_rules=["mcp__github__create_issue"], deny_rules=[])
         check_mcp_permission(ctx, "github", "create_issue")
 
     def test_allow_by_server_key(self) -> None:
-        ctx = FrameworkContext.for_testing(
-            allow_rules=["mcp__github"], deny_rules=[]
-        )
+        ctx = FrameworkContext.for_testing(allow_rules=["mcp__github"], deny_rules=[])
         check_mcp_permission(ctx, "github", "create_issue")
         check_mcp_permission(ctx, "github", "list_repos")
 
@@ -630,16 +622,12 @@ class TestCheckMcpPermission:
             check_mcp_permission(ctx, "github", "create_issue")
 
     def test_tool_allow_does_not_leak_to_other_tools(self) -> None:
-        ctx = FrameworkContext.for_testing(
-            allow_rules=["mcp__github__create_issue"], deny_rules=[]
-        )
+        ctx = FrameworkContext.for_testing(allow_rules=["mcp__github__create_issue"], deny_rules=[])
         with pytest.raises(AskPermission):
             check_mcp_permission(ctx, "github", "delete_repo")
 
     def test_server_allow_does_not_leak_to_other_servers(self) -> None:
-        ctx = FrameworkContext.for_testing(
-            allow_rules=["mcp__github"], deny_rules=[]
-        )
+        ctx = FrameworkContext.for_testing(allow_rules=["mcp__github"], deny_rules=[])
         with pytest.raises(AskPermission):
             check_mcp_permission(ctx, "slack", "send_message")
 

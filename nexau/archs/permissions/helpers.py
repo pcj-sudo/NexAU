@@ -27,53 +27,149 @@ _WILDCARD = "**"
 # CC 文档明确列出: ls, cat, head, tail, grep, find, wc, diff, stat, du, cd
 # 以下扩展命令为纯信息查询/文本处理，不修改文件系统，等同只读语义。
 # 注意: sed、awk 可通过 -i / 重定向修改文件，CC 不视为只读，故不纳入。
-_READONLY_COMMANDS: frozenset[str] = frozenset({
-    # CC 文档: 核心只读
-    "ls", "cat", "head", "tail", "grep", "find", "wc", "diff", "stat", "du", "cd",
-    # 扩展: 纯信息查询
-    "file", "which", "whereis", "whoami", "pwd", "echo", "printf",
-    "env", "printenv", "date", "uname", "hostname", "id", "uptime",
-    # 扩展: 路径工具
-    "basename", "dirname", "realpath", "readlink",
-    # 扩展: 校验/哈希
-    "md5sum", "sha256sum",
-    # 扩展: 纯 stdout 文本处理（不含 sed/awk）
-    "sort", "uniq", "tr", "cut", "tac", "rev", "nl", "fmt", "fold",
-    "paste", "join", "comm", "column", "seq", "strings", "xxd",
-    # 扩展: 搜索/过滤
-    "egrep", "fgrep", "rg", "ag",
-    # 扩展: 分页/导航
-    "less", "more", "tree",
-    # 扩展: 帮助/类型
-    "type", "man", "help",
-    # 扩展: shell 内建
-    "test", "true", "false", "[",
-})
+_READONLY_COMMANDS: frozenset[str] = frozenset(
+    {
+        # CC 文档: 核心只读
+        "ls",
+        "cat",
+        "head",
+        "tail",
+        "grep",
+        "find",
+        "wc",
+        "diff",
+        "stat",
+        "du",
+        "cd",
+        # 扩展: 纯信息查询
+        "file",
+        "which",
+        "whereis",
+        "whoami",
+        "pwd",
+        "echo",
+        "printf",
+        "env",
+        "printenv",
+        "date",
+        "uname",
+        "hostname",
+        "id",
+        "uptime",
+        # 扩展: 路径工具
+        "basename",
+        "dirname",
+        "realpath",
+        "readlink",
+        # 扩展: 校验/哈希
+        "md5sum",
+        "sha256sum",
+        # 扩展: 纯 stdout 文本处理（不含 sed/awk）
+        "sort",
+        "uniq",
+        "tr",
+        "cut",
+        "tac",
+        "rev",
+        "nl",
+        "fmt",
+        "fold",
+        "paste",
+        "join",
+        "comm",
+        "column",
+        "seq",
+        "strings",
+        "xxd",
+        # 扩展: 搜索/过滤
+        "egrep",
+        "fgrep",
+        "rg",
+        "ag",
+        # 扩展: 分页/导航
+        "less",
+        "more",
+        "tree",
+        # 扩展: 帮助/类型
+        "type",
+        "man",
+        "help",
+        # 扩展: shell 内建
+        "test",
+        "true",
+        "false",
+        "[",
+    }
+)
 
 # CC 对齐: git 只读子命令白名单
-_READONLY_GIT_SUBCOMMANDS: frozenset[str] = frozenset({
-    "log", "status", "diff", "show", "branch", "tag", "remote",
-    "config", "describe", "rev-parse", "rev-list", "shortlog",
-    "blame", "ls-files", "ls-tree", "ls-remote", "cat-file",
-    "name-rev", "reflog", "grep", "cherry", "merge-base",
-    "count-objects", "verify-commit", "verify-tag", "whatchanged",
-})
+_READONLY_GIT_SUBCOMMANDS: frozenset[str] = frozenset(
+    {
+        "log",
+        "status",
+        "diff",
+        "show",
+        "branch",
+        "tag",
+        "remote",
+        "config",
+        "describe",
+        "rev-parse",
+        "rev-list",
+        "shortlog",
+        "blame",
+        "ls-files",
+        "ls-tree",
+        "ls-remote",
+        "cat-file",
+        "name-rev",
+        "reflog",
+        "grep",
+        "cherry",
+        "merge-base",
+        "count-objects",
+        "verify-commit",
+        "verify-tag",
+        "whatchanged",
+    }
+)
 
 # CC 对齐: 进程包装器 — 权限判定前自动剥离，让规则匹配内部实际命令
 # 例: timeout 30 git push → 按 "git push" 判定
-_PROCESS_WRAPPERS: frozenset[str] = frozenset({
-    "timeout", "time", "nice", "nohup", "stdbuf",
-})
+_PROCESS_WRAPPERS: frozenset[str] = frozenset(
+    {
+        "timeout",
+        "time",
+        "nice",
+        "nohup",
+        "stdbuf",
+    }
+)
 
 # CC 对齐: 写文件保护路径 — 即使目录已 allow 也强制 ask
-_PROTECTED_DIRS: frozenset[str] = frozenset({
-    ".git", ".vscode", ".idea", ".husky", ".claude",
-})
-_PROTECTED_FILES: frozenset[str] = frozenset({
-    ".gitconfig", ".gitmodules",
-    ".bashrc", ".bash_profile", ".zshrc", ".zprofile", ".profile",
-    ".ripgreprc", ".mcp.json", ".claude.json",
-})
+_PROTECTED_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".vscode",
+        ".idea",
+        ".husky",
+        ".claude",
+    }
+)
+_PROTECTED_FILES: frozenset[str] = frozenset(
+    {
+        ".gitconfig",
+        ".gitmodules",
+        ".bashrc",
+        ".bash_profile",
+        ".zshrc",
+        ".zprofile",
+        ".profile",
+        ".ripgreprc",
+        ".mcp.json",
+        ".claude.json",
+    }
+)
 
 
 def check_permission(
@@ -238,9 +334,16 @@ def _split_shell_commands(command: str) -> list[str]:
 _OUTPUT_REDIRECT_RE = re.compile(r"^[0-9]*>{1,2}")
 
 # CC 对齐: shell 解释器 — 检测 shell -c 模式并递归检查内部命令
-_SHELL_INTERPRETERS: frozenset[str] = frozenset({
-    "sh", "bash", "zsh", "dash", "ksh", "fish",
-})
+_SHELL_INTERPRETERS: frozenset[str] = frozenset(
+    {
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "ksh",
+        "fish",
+    }
+)
 
 
 def _is_numeric_arg(s: str) -> bool:
@@ -285,24 +388,57 @@ def _strip_process_wrappers(tokens: list[str]) -> list[str]:
 # CC 对齐: 有子命令结构的命令集合
 # 这些命令的 permission_key 为 "command subcommand"（如 "npm install"），
 # 其他命令的 key 为命令头（如 "python"）。
-_COMMANDS_WITH_SUBCOMMANDS: frozenset[str] = frozenset({
-    # VCS
-    "git", "svn", "hg",
-    # JS/TS
-    "npm", "npx", "yarn", "pnpm", "bun", "deno",
-    # Python
-    "pip", "pip3", "uv", "poetry", "pdm", "rye", "conda",
-    # Rust / Go / Java
-    "cargo", "go", "mvn", "gradle",
-    # Container / K8s
-    "docker", "docker-compose", "podman", "kubectl", "helm",
-    # System package managers
-    "brew", "apt", "apt-get", "yum", "dnf", "pacman", "apk",
-    # System services
-    "systemctl", "journalctl", "launchctl", "service",
-    # Build
-    "make", "cmake", "ninja",
-})
+_COMMANDS_WITH_SUBCOMMANDS: frozenset[str] = frozenset(
+    {
+        # VCS
+        "git",
+        "svn",
+        "hg",
+        # JS/TS
+        "npm",
+        "npx",
+        "yarn",
+        "pnpm",
+        "bun",
+        "deno",
+        # Python
+        "pip",
+        "pip3",
+        "uv",
+        "poetry",
+        "pdm",
+        "rye",
+        "conda",
+        # Rust / Go / Java
+        "cargo",
+        "go",
+        "mvn",
+        "gradle",
+        # Container / K8s
+        "docker",
+        "docker-compose",
+        "podman",
+        "kubectl",
+        "helm",
+        # System package managers
+        "brew",
+        "apt",
+        "apt-get",
+        "yum",
+        "dnf",
+        "pacman",
+        "apk",
+        # System services
+        "systemctl",
+        "journalctl",
+        "launchctl",
+        "service",
+        # Build
+        "make",
+        "cmake",
+        "ninja",
+    }
+)
 
 
 def _command_permission_key(tokens: list[str]) -> str:
@@ -485,9 +621,7 @@ def check_url_permission(ctx: FrameworkContext, url: str) -> None:
     )
 
 
-def check_mcp_permission(
-    ctx: FrameworkContext, server_name: str, tool_name: str
-) -> None:
+def check_mcp_permission(ctx: FrameworkContext, server_name: str, tool_name: str) -> None:
     """MCP 工具三态权限检查。
 
     RFC-0019: 内置 MCP helper

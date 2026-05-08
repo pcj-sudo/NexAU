@@ -684,10 +684,7 @@ class MCPTool(Tool):
         # RFC-0019: 权限优先级 tool_permissions > server permissions > None (auto-allow)
         resolved_perms: dict[str, list[str]] | None = None
         if server_config is not None:
-            if (
-                server_config.tool_permissions is not None
-                and self._raw_tool_name in server_config.tool_permissions
-            ):
+            if server_config.tool_permissions is not None and self._raw_tool_name in server_config.tool_permissions:
                 resolved_perms = server_config.tool_permissions[self._raw_tool_name]
             elif server_config.permissions is not None:
                 resolved_perms = server_config.permissions

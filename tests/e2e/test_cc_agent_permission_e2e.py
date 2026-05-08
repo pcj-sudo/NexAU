@@ -56,7 +56,7 @@ def _build_cc_agent_tools() -> list[Tool]:
     from nexau.archs.tool.builtin.web_tools import google_web_search, web_fetch
 
     tools: list[Tool] = []
-    empty = {"allow": [], "deny": []}
+    empty: dict[str, list[str]] = {"allow": [], "deny": []}
 
     # Readonly (no permissions → default wildcard allow)
     tools.append(Tool.from_yaml(str(TOOLS_DIR / "read_file.tool.yaml"), binding=read_file))
@@ -121,7 +121,9 @@ async def _make_agent(
     session_id = f"s_{test_id}"
 
     await sm.init_permission_rules_from_config(
-        user_id=user_id, session_id=session_id, tools=tools,
+        user_id=user_id,
+        session_id=session_id,
+        tools=tools,
     )
 
     # Pre-load extra allow/deny rules
@@ -129,17 +131,23 @@ async def _make_agent(
         for tool_name, rules in extra_allow_rules.items():
             for rule in rules:
                 await sm.save_permission_rule(
-                    user_id=user_id, session_id=session_id,
-                    tool_name=tool_name, rule_content=rule,
-                    behavior="allow", source="test",
+                    user_id=user_id,
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    rule_content=rule,
+                    behavior="allow",
+                    source="test",
                 )
     if extra_deny_rules:
         for tool_name, rules in extra_deny_rules.items():
             for rule in rules:
                 await sm.save_permission_rule(
-                    user_id=user_id, session_id=session_id,
-                    tool_name=tool_name, rule_content=rule,
-                    behavior="deny", source="test",
+                    user_id=user_id,
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    rule_content=rule,
+                    behavior="deny",
+                    source="test",
                 )
 
     config = AgentConfig(
@@ -151,20 +159,26 @@ async def _make_agent(
         sandbox_config=LocalSandboxConfig(work_dir=str(tmp_path)),
     )
     agent = await Agent.create(
-        config=config, session_manager=sm,
-        user_id=user_id, session_id=session_id,
+        config=config,
+        session_manager=sm,
+        user_id=user_id,
+        session_id=session_id,
     )
     return agent, sm, user_id, session_id
 
 
 async def _get_pending(
-    sm: SessionManager, user_id: str, session_id: str,
+    sm: SessionManager,
+    user_id: str,
+    session_id: str,
 ) -> dict[str, Any] | None:
     return await sm.get_pending_tool_calls(user_id=user_id, session_id=session_id)
 
 
 async def _get_unresolved(
-    sm: SessionManager, user_id: str, session_id: str,
+    sm: SessionManager,
+    user_id: str,
+    session_id: str,
 ) -> dict[str, Any]:
     pending = await _get_pending(sm, user_id, session_id)
     if pending is None:
@@ -173,7 +187,10 @@ async def _get_unresolved(
 
 
 async def _resolve_all(
-    agent: Agent, sm: SessionManager, user_id: str, session_id: str,
+    agent: Agent,
+    sm: SessionManager,
+    user_id: str,
+    session_id: str,
     decision: str = "allow",
 ) -> None:
     unresolved = await _get_unresolved(sm, user_id, session_id)
@@ -195,29 +212,36 @@ class TestCcAgentConfigPipeline:
         assert len(tools) == 14, f"Expected 14 YAML tools, got {len(tools)}: {names}"
 
         expected = {
-            "read_file", "read_many_files", "read_visual_file", "glob",
-            "list_directory", "search_file_content", "WebSearch",
-            "write_file", "replace", "apply_patch", "multiedit_tool",
-            "run_shell_command", "run_code_tool", "WebFetch",
+            "read_file",
+            "read_many_files",
+            "read_visual_file",
+            "glob",
+            "list_directory",
+            "search_file_content",
+            "WebSearch",
+            "write_file",
+            "replace",
+            "apply_patch",
+            "multiedit_tool",
+            "run_shell_command",
+            "run_code_tool",
+            "WebFetch",
         }
         assert names == expected, f"Mismatch: missing={expected - names}, extra={names - expected}"
 
     def test_readonly_tools_have_no_permissions(self) -> None:
         tools = _build_cc_agent_tools()
-        readonly_names = {"read_file", "read_many_files", "read_visual_file", "glob",
-                          "list_directory", "search_file_content", "WebSearch"}
+        readonly_names = {"read_file", "read_many_files", "read_visual_file", "glob", "list_directory", "search_file_content", "WebSearch"}
         for tool in tools:
             if tool.name in readonly_names:
                 assert tool.permissions is None, f"{tool.name} should have no permissions"
 
     def test_write_tools_have_empty_permissions(self) -> None:
         tools = _build_cc_agent_tools()
-        write_names = {"write_file", "replace", "apply_patch", "multiedit_tool",
-                       "run_shell_command", "run_code_tool", "WebFetch"}
+        write_names = {"write_file", "replace", "apply_patch", "multiedit_tool", "run_shell_command", "run_code_tool", "WebFetch"}
         for tool in tools:
             if tool.name in write_names:
-                assert tool.permissions == {"allow": [], "deny": []}, \
-                    f"{tool.name} should have empty permissions, got {tool.permissions}"
+                assert tool.permissions == {"allow": [], "deny": []}, f"{tool.name} should have empty permissions, got {tool.permissions}"
 
     def test_init_permission_rules_from_config(self) -> None:
         import asyncio
@@ -229,19 +253,25 @@ class TestCcAgentConfigPipeline:
 
             tools = _build_cc_agent_tools()
             await sm.init_permission_rules_from_config(
-                user_id="u1", session_id="s1", tools=tools,
+                user_id="u1",
+                session_id="s1",
+                tools=tools,
             )
 
             for name in ("read_file", "glob", "WebSearch"):
                 allow, deny = await sm.load_permission_rules(
-                    user_id="u1", session_id="s1", tool_name=name,
+                    user_id="u1",
+                    session_id="s1",
+                    tool_name=name,
                 )
                 assert allow == [], f"{name} should have no allow rules"
                 assert deny == [], f"{name} should have no deny rules"
 
             for name in ("write_file", "run_shell_command", "run_code_tool", "WebFetch"):
                 allow, deny = await sm.load_permission_rules(
-                    user_id="u1", session_id="s1", tool_name=name,
+                    user_id="u1",
+                    session_id="s1",
+                    tool_name=name,
                 )
                 assert allow == [], f"{name} should have no allow rules (empty config list)"
                 assert deny == [], f"{name} should have no deny rules (empty config list)"
@@ -250,23 +280,21 @@ class TestCcAgentConfigPipeline:
 
     def test_readonly_tools_have_no_ctx_in_signature(self) -> None:
         tools = _build_cc_agent_tools()
-        no_ctx_expected = {"read_file", "read_many_files", "read_visual_file", "glob",
-                           "list_directory", "search_file_content"}
+        no_ctx_expected = {"read_file", "read_many_files", "read_visual_file", "glob", "list_directory", "search_file_content"}
         for tool in tools:
             if tool.name in no_ctx_expected:
+                assert tool.implementation is not None, f"{tool.name} has no implementation"
                 sig = inspect.signature(tool.implementation)
-                assert "ctx" not in sig.parameters, \
-                    f"{tool.name} should NOT have ctx parameter but does"
+                assert "ctx" not in sig.parameters, f"{tool.name} should NOT have ctx parameter but does"
 
     def test_write_tools_have_ctx_in_signature(self) -> None:
         tools = _build_cc_agent_tools()
-        ctx_expected = {"write_file", "replace", "apply_patch", "multiedit_tool",
-                        "run_shell_command", "run_code_tool", "WebFetch"}
+        ctx_expected = {"write_file", "replace", "apply_patch", "multiedit_tool", "run_shell_command", "run_code_tool", "WebFetch"}
         for tool in tools:
             if tool.name in ctx_expected:
+                assert tool.implementation is not None, f"{tool.name} has no implementation"
                 sig = inspect.signature(tool.implementation)
-                assert "ctx" in sig.parameters, \
-                    f"{tool.name} MUST have ctx parameter but doesn't"
+                assert "ctx" in sig.parameters, f"{tool.name} MUST have ctx parameter but doesn't"
 
 
 # =========================================================================
@@ -400,10 +428,7 @@ class TestEmptyRulesAsk:
 
         agent, sm, uid, sid = await _make_agent(tmp_path, "rep_ask")
         await agent.run_async(
-            message=(
-                f"Use the replace tool on {target}. "
-                f"Replace old_string='old_value_abc' with new_string='new_value_xyz'."
-            ),
+            message=(f"Use the replace tool on {target}. Replace old_string='old_value_abc' with new_string='new_value_xyz'."),
         )
         pending = await _get_pending(sm, uid, sid)
         if pending is None:
@@ -419,10 +444,7 @@ class TestEmptyRulesAsk:
 
         agent, sm, uid, sid = await _make_agent(tmp_path, "me_ask")
         await agent.run_async(
-            message=(
-                f"Use the multiedit_tool to edit {target}. "
-                f"Replace old_string='hello' with new_string='hi'."
-            ),
+            message=(f"Use the multiedit_tool to edit {target}. Replace old_string='hello' with new_string='hi'."),
         )
         pending = await _get_pending(sm, uid, sid)
         if pending is None:
@@ -438,10 +460,7 @@ class TestEmptyRulesAsk:
 
         agent, sm, uid, sid = await _make_agent(tmp_path, "ap_ask")
         await agent.run_async(
-            message=(
-                f"Use the apply_patch tool to patch {target}. "
-                f"Change 'line1' to 'patched_line'."
-            ),
+            message=(f"Use the apply_patch tool to patch {target}. Change 'line1' to 'patched_line'."),
         )
         pending = await _get_pending(sm, uid, sid)
         if pending is None:
@@ -522,7 +541,8 @@ class TestAllowRulesPass:
     @pytest.mark.anyio
     async def test_write_file_with_allow(self, tmp_path: Path) -> None:
         agent, sm, uid, sid = await _make_agent(
-            tmp_path, "wf_allow",
+            tmp_path,
+            "wf_allow",
             extra_allow_rules={"write_file": [str(tmp_path / "**")]},
         )
         target = tmp_path / "allowed.txt"
@@ -541,13 +561,13 @@ class TestAllowRulesPass:
         target.write_text("old_value_replace_test")
 
         agent, sm, uid, sid = await _make_agent(
-            tmp_path, "rep_allow",
+            tmp_path,
+            "rep_allow",
             extra_allow_rules={"replace": [str(tmp_path / "**")]},
         )
         await agent.run_async(
             message=(
-                f"Use the replace tool on {target}. "
-                f"Replace old_string='old_value_replace_test' with new_string='new_value_replace_test'."
+                f"Use the replace tool on {target}. Replace old_string='old_value_replace_test' with new_string='new_value_replace_test'."
             ),
         )
         pending = await _get_pending(sm, uid, sid)
@@ -558,7 +578,8 @@ class TestAllowRulesPass:
     @pytest.mark.anyio
     async def test_shell_with_allow(self, tmp_path: Path) -> None:
         agent, sm, uid, sid = await _make_agent(
-            tmp_path, "sh_allow",
+            tmp_path,
+            "sh_allow",
             extra_allow_rules={"run_shell_command": ["python"]},
         )
         resp = await agent.run_async(
@@ -571,7 +592,8 @@ class TestAllowRulesPass:
     @pytest.mark.anyio
     async def test_webfetch_with_allow(self, tmp_path: Path) -> None:
         agent, sm, uid, sid = await _make_agent(
-            tmp_path, "wf_url_allow",
+            tmp_path,
+            "wf_url_allow",
             extra_allow_rules={"WebFetch": ["example.com"]},
         )
         resp = await agent.run_async(
@@ -584,7 +606,8 @@ class TestAllowRulesPass:
     @pytest.mark.anyio
     async def test_run_code_with_allow(self, tmp_path: Path) -> None:
         agent, sm, uid, sid = await _make_agent(
-            tmp_path, "rc_allow",
+            tmp_path,
+            "rc_allow",
             extra_allow_rules={"run_code_tool": ["code_execution"]},
         )
         resp = await agent.run_async(
@@ -603,7 +626,8 @@ class TestDenyRulesBlocked:
     @pytest.mark.anyio
     async def test_write_file_denied(self, tmp_path: Path) -> None:
         agent, sm, uid, sid = await _make_agent(
-            tmp_path, "wf_deny",
+            tmp_path,
+            "wf_deny",
             extra_deny_rules={"write_file": [str(tmp_path / "**")]},
         )
         resp = await agent.run_async(
@@ -617,7 +641,8 @@ class TestDenyRulesBlocked:
     @pytest.mark.anyio
     async def test_shell_denied(self, tmp_path: Path) -> None:
         agent, sm, uid, sid = await _make_agent(
-            tmp_path, "sh_deny",
+            tmp_path,
+            "sh_deny",
             extra_deny_rules={"run_shell_command": ["python"]},
         )
         resp = await agent.run_async(
@@ -630,7 +655,8 @@ class TestDenyRulesBlocked:
     @pytest.mark.anyio
     async def test_webfetch_denied(self, tmp_path: Path) -> None:
         agent, sm, uid, sid = await _make_agent(
-            tmp_path, "wf_url_deny",
+            tmp_path,
+            "wf_url_deny",
             extra_deny_rules={"WebFetch": ["example.com"]},
         )
         resp = await agent.run_async(
@@ -649,7 +675,8 @@ class TestWildcardAllowAll:
     @pytest.mark.anyio
     async def test_write_file_wildcard(self, tmp_path: Path) -> None:
         agent, sm, uid, sid = await _make_agent(
-            tmp_path, "wf_wc",
+            tmp_path,
+            "wf_wc",
             extra_allow_rules={"write_file": ["**"]},
         )
         target = tmp_path / "wildcard.txt"
@@ -663,7 +690,8 @@ class TestWildcardAllowAll:
     @pytest.mark.anyio
     async def test_shell_wildcard(self, tmp_path: Path) -> None:
         agent, sm, uid, sid = await _make_agent(
-            tmp_path, "sh_wc",
+            tmp_path,
+            "sh_wc",
             extra_allow_rules={"run_shell_command": ["**"]},
         )
         await agent.run_async(
@@ -682,7 +710,8 @@ class TestProtectedPaths:
     async def test_git_dir_ask_despite_wildcard(self, tmp_path: Path) -> None:
         (tmp_path / ".git").mkdir()
         agent, sm, uid, sid = await _make_agent(
-            tmp_path, "wf_git",
+            tmp_path,
+            "wf_git",
             extra_allow_rules={"write_file": ["**"]},
         )
         await agent.run_async(
@@ -733,7 +762,9 @@ class TestFullLifecycle:
 
         # Step 6: verify allow rule persisted
         allow_rules, _ = await sm.load_permission_rules(
-            user_id=uid, session_id=sid, tool_name="write_file",
+            user_id=uid,
+            session_id=sid,
+            tool_name="write_file",
         )
         assert len(allow_rules) > 0, "Allow rule should be persisted after resolve"
 
@@ -825,5 +856,4 @@ class TestMixedParallel:
         unresolved = await _get_unresolved(sm, uid, sid)
         assert len(unresolved) > 0
         for entry in unresolved.values():
-            assert entry["tool_name"] == "write_file", \
-                f"Only write_file should ask, got {entry['tool_name']}"
+            assert entry["tool_name"] == "write_file", f"Only write_file should ask, got {entry['tool_name']}"
