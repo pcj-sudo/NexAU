@@ -378,6 +378,18 @@ class Executor:
         return self._shutdown_event
 
     @property
+    def has_active_teammates(self) -> Callable[[], bool] | None:
+        return self._has_active_teammates
+
+    @has_active_teammates.setter
+    def has_active_teammates(self, value: Callable[[], bool] | None) -> None:
+        self._has_active_teammates = value
+
+    @property
+    def tool_registry(self) -> ToolRegistry:
+        return self._tool_registry
+
+    @property
     def has_running_executors(self) -> bool:
         """Check if there are any running thread pool executors."""
         return bool(self._running_executors)

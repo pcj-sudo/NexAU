@@ -1243,7 +1243,7 @@ class Agent:
                     run_id=run_id,
                     root_run_id=root_run_id,
                     _tool_registry=self._tool_registry,
-                    _shutdown_event=self.executor._shutdown_event,
+                    _shutdown_event=self.executor.shutdown_event,
                     session_id=self._session_id,
                 )
                 await self._resume_pending_tool_calls(pending, agent_state, resume_ctx)
@@ -1555,7 +1555,7 @@ class Agent:
                 self.history.append(Message(role=Role.TOOL, content=[tool_result_block]))
             elif decision in ("allow", "allow_once"):
                 # 重新调用 tool
-                tool_obj = self.executor._tool_registry.get_tool(tool_name)
+                tool_obj = self.executor.tool_registry.get_tool(tool_name)
                 if tool_obj is None:
                     error_content = f"Tool '{tool_name}' not found during resume"
                     tool_result_block = ToolResultBlock(
@@ -1593,8 +1593,7 @@ class Agent:
                         else:
                             result = tool_obj.execute(**exec_params)
 
-                        raw_output = result if isinstance(result, dict) else {"result": result}
-                        content_str = str(raw_output)
+                        content_str = str(result)
                         tool_result_block = ToolResultBlock(
                             tool_use_id=tool_call_id,
                             content=coerce_tool_result_content(content_str, fallback_text=None),

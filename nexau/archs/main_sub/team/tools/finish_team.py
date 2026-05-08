@@ -59,7 +59,7 @@ async def finish_team(
     teammates = ts.team.get_teammate_info()
     running_teammates = [t for t in teammates if t.status == "running"]
     if running_teammates:
-        await ts.team._stop_all_teammates()
+        await ts.team.stop_all_teammates()
 
     # 3. 阻止结束：存在未完成任务
     if incomplete:

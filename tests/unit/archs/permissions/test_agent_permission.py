@@ -260,7 +260,7 @@ class TestResumePendingToolCalls:
             agent._session_id = "s1"
             agent._history = HistoryList([])
             agent.executor = MagicMock()
-            agent.executor._tool_registry = ToolRegistry()
+            agent.executor.tool_registry = ToolRegistry()
 
         pending = {
             "tc_d": _make_pending_entry("blocked_tool", decision="deny"),
@@ -312,7 +312,7 @@ class TestResumePendingToolCalls:
             agent._session_id = "s1"
             agent._history = HistoryList([])
             agent.executor = MagicMock()
-            agent.executor._tool_registry = registry
+            agent.executor.tool_registry = registry
 
         pending = {
             "tc_a": _make_pending_entry("write_file", decision="allow", permission_key="path:/tmp"),
@@ -356,7 +356,7 @@ class TestResumePendingToolCalls:
             agent._session_id = "s1"
             agent._history = HistoryList([])
             agent.executor = MagicMock()
-            agent.executor._tool_registry = registry
+            agent.executor.tool_registry = registry
 
         pending = {
             "tc_ao": _make_pending_entry("write_file", decision="allow_once", permission_key="path:/var/log"),
@@ -391,7 +391,7 @@ class TestResumePendingToolCalls:
             agent._session_id = "s1"
             agent._history = HistoryList([])
             agent.executor = MagicMock()
-            agent.executor._tool_registry = registry
+            agent.executor.tool_registry = registry
 
         pending = {
             "tc_allow": _make_pending_entry("my_tool", decision="allow"),
@@ -423,7 +423,7 @@ class TestResumePendingToolCalls:
             agent._session_id = "s1"
             agent._history = HistoryList([])
             agent.executor = MagicMock()
-            agent.executor._tool_registry = ToolRegistry()
+            agent.executor.tool_registry = ToolRegistry()
 
         pending = {
             "tc_done": _make_pending_entry("t", decision="allow"),
@@ -457,7 +457,7 @@ class TestResumePendingToolCalls:
             agent._session_id = "s1"
             agent._history = HistoryList([])
             agent.executor = MagicMock()
-            agent.executor._tool_registry = ToolRegistry()
+            agent.executor.tool_registry = ToolRegistry()
 
         pending = {
             "tc_missing": _make_pending_entry("ghost_tool", decision="allow"),
@@ -506,7 +506,7 @@ class TestResumePendingToolCalls:
             agent._session_id = "s1"
             agent._history = HistoryList([])
             agent.executor = MagicMock()
-            agent.executor._tool_registry = registry
+            agent.executor.tool_registry = registry
 
         pending = {
             "tc_1": _make_pending_entry("tool_a", decision="allow"),
@@ -558,7 +558,7 @@ class TestResumePendingToolCalls:
             agent._session_id = "s1"
             agent._history = HistoryList([])
             agent.executor = MagicMock()
-            agent.executor._tool_registry = registry
+            agent.executor.tool_registry = registry
 
         pending = {
             "tc_boom": _make_pending_entry("boom_tool", decision="allow"),
