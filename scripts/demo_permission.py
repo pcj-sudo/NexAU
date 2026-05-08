@@ -14,12 +14,9 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import sys
 from typing import Any
 
 from dotenv import load_dotenv
-
-load_dotenv()
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent import Agent
@@ -32,6 +29,7 @@ from nexau.archs.session.orm import InMemoryDatabaseEngine
 from nexau.archs.tool.tool import Tool
 from nexau.archs.tracer.adapters.langfuse import LangfuseTracer
 
+load_dotenv()
 
 SYSTEM_PROMPT = """\
 You are a data management assistant. You have exactly 3 tools:

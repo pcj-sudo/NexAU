@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
+    from nexau.archs.main_sub.framework_context import FrameworkContext
     from nexau.archs.main_sub.team.state import AgentTeamState
 
 import anthropic
@@ -48,7 +49,6 @@ from nexau.archs.main_sub.config import AgentConfig, ConfigError, ExecutionConfi
 from nexau.archs.main_sub.context_value import ContextValue
 from nexau.archs.main_sub.execution.executor import Executor
 from nexau.archs.main_sub.execution.stop_reason import AgentStopReason
-from nexau.archs.permissions.types import PendingPermissionsError
 from nexau.archs.main_sub.execution.stop_result import StopResult
 from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.main_sub.prompt_builder import PromptBuilder
@@ -62,6 +62,7 @@ from nexau.archs.main_sub.tool_call_modes import (
 )
 from nexau.archs.main_sub.utils.cleanup_manager import cleanup_manager
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
+from nexau.archs.permissions.types import PendingPermissionsError
 from nexau.archs.sandbox import (
     BaseSandbox,
     BaseSandboxManager,
@@ -1532,7 +1533,7 @@ class Agent:
         - deny → 合成 denial ToolResult
         处理完毕后清除 pending_tool_calls。
         """
-        from nexau.archs.main_sub.framework_context import FrameworkContext as FC
+        from nexau.archs.main_sub.framework_context import FrameworkContext
         from nexau.core.messages import ToolResultBlock, coerce_tool_result_content
 
         for tool_call_id, entry in pending.items():
@@ -1567,7 +1568,7 @@ class Agent:
                     # 构造 per-tool-call context：allow_once 临时添加 permission_key
                     permission_key = entry.get("permission_key", "")
                     if decision == "allow_once":
-                        tool_ctx: FC = framework_context.for_tool_call(
+                        tool_ctx: FrameworkContext = framework_context.for_tool_call(
                             tool_name=tool_name,
                             allow_rules=[permission_key],
                             deny_rules=[],

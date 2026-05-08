@@ -24,7 +24,6 @@ from typing import Any
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.framework_context import FrameworkContext
 from nexau.archs.permissions.helpers import check_path_permission
-from nexau.archs.permissions.types import AskPermission, PermissionDenied
 from nexau.archs.sandbox import BaseSandbox, SandboxStatus
 from nexau.archs.tool.builtin._sandbox_utils import get_sandbox, resolve_path
 

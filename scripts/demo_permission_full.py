@@ -10,14 +10,10 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import os
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
-
-load_dotenv()
 
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent import Agent
@@ -27,6 +23,8 @@ from nexau.archs.session import SessionManager
 from nexau.archs.session.orm import InMemoryDatabaseEngine
 from nexau.archs.tool.tool import Tool
 from nexau.archs.tracer.adapters.langfuse import LangfuseTracer
+
+load_dotenv()
 
 if TYPE_CHECKING:
     pass
@@ -165,9 +163,9 @@ def _setup_workspace() -> None:
     (ws / "data.txt").write_text("line1\nline2\nline3\n")
 
     print(f"Workspace ready: {WORKSPACE}")
-    print(f"  src/main.py  → 'hello world'")
-    print(f"  .env         → 'SECRET=abc123'")
-    print(f"  data.txt     → 3 lines")
+    print("  src/main.py  → 'hello world'")
+    print("  .env         → 'SECRET=abc123'")
+    print("  data.txt     → 3 lines")
 
 
 # ---------------------------------------------------------------------------

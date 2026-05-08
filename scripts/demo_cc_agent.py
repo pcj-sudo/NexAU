@@ -32,8 +32,6 @@ from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
 
-load_dotenv()
-
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent import Agent
 from nexau.archs.main_sub.config import AgentConfig
@@ -43,6 +41,8 @@ from nexau.archs.session import SessionManager
 from nexau.archs.session.orm import InMemoryDatabaseEngine
 from nexau.archs.tool.tool import Tool
 from nexau.archs.tracer.adapters.langfuse import LangfuseTracer
+
+load_dotenv()
 
 if TYPE_CHECKING:
     pass
@@ -323,12 +323,12 @@ async def main() -> None:
     print("Suggested tests:")
     print(f"  1. 列出 {work_dir} 目录                        (readonly → auto)")
     print(f"  2. 创建 {work_dir}/hello.py 写 print('hi')    (write → ask)")
-    print(f"  3. 用 run_code_tool 执行 print(1+1)           (code → ask)")
+    print("  3. 用 run_code_tool 执行 print(1+1)           (code → ask)")
     print(f"  4. 执行 ls -la {work_dir}                      (shell readonly → auto)")
     print(f"  5. 执行 rm {work_dir}/hello.py                 (shell → ask)")
-    print(f"  6. 执行 python hello.py                        (shell → ask)")
-    print(f"  7. 抓取 https://example.com                    (web → ask)")
-    print(f"  8. 同时: 读文件 + 写文件 + rm 文件             (parallel mixed)")
+    print("  6. 执行 python hello.py                        (shell → ask)")
+    print("  7. 抓取 https://example.com                    (web → ask)")
+    print("  8. 同时: 读文件 + 写文件 + rm 文件             (parallel mixed)")
     print()
     print("Type 'quit' to exit.")
     print("=" * 60)

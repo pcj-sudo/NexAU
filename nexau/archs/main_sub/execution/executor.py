@@ -36,12 +36,6 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
 
 from nexau.archs.llm.llm_aggregators.events import RetryEvent
-from nexau.archs.permissions.types import (
-    AskOutcome,
-    AskPermission,
-    DenyOutcome,
-    PermissionDenied,
-)
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.config import AgentConfig
@@ -77,6 +71,12 @@ from nexau.archs.main_sub.tool_call_modes import (
     normalize_tool_call_mode,
 )
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
+from nexau.archs.permissions.types import (
+    AskOutcome,
+    AskPermission,
+    DenyOutcome,
+    PermissionDenied,
+)
 from nexau.archs.tool.tool import (
     StructuredToolDefinition,
     Tool,
@@ -943,7 +943,10 @@ class Executor:
                             if not has_teammates:
                                 self._consecutive_text_only_count += 1
                                 if self._consecutive_text_only_count >= 3:
-                                    logger.warning("team_mode: agent produced 3 consecutive text-only responses with no active teammates, auto-exiting")
+                                    logger.warning(
+                                        "team_mode: agent produced 3 consecutive text-only "
+                                        "responses with no active teammates, auto-exiting"
+                                    )
                                     force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
                                     final_response = processed_response
                                     break
