@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from nexau.archs.main_sub.execution.tool_executor import ToolExecutionResult
 
 
-class AskPermission(Exception):
+class AskPermission(Exception):  # noqa: N818 — signal, not error
     """Tool 函数在匹配不到 allow/deny 规则时 raise。
 
     RFC-0019: Ask 触发异常
@@ -30,7 +30,7 @@ class AskPermission(Exception):
         super().__init__(prompt)
 
 
-class PermissionDenied(Exception):
+class PermissionDenied(Exception):  # noqa: N818 — signal, not error
     """Tool 函数在命中 deny 规则时 raise。
 
     RFC-0019: Deny 触发异常
@@ -100,4 +100,4 @@ class AskOutcome:
     tool_name: str
     prompt: str
     permission_key: str
-    parameters: dict[str, Any] = field(default_factory=dict)
+    parameters: dict[str, Any] = field(default_factory=lambda: {})

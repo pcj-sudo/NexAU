@@ -12,7 +12,6 @@ from nexau.archs.permissions.helpers import (
 )
 from nexau.archs.permissions.types import AskPermission, PermissionDenied
 
-
 # ---------------------------------------------------------------------------
 # check_permission: 通用三态检查
 # ---------------------------------------------------------------------------

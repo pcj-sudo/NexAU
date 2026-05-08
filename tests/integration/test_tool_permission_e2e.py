@@ -28,12 +28,8 @@ Uses InMemoryDatabaseEngine + mock LLM to exercise the full lifecycle:
 
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 
-from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.permissions.helpers import check_permission
 from nexau.archs.permissions.types import (
     AskPermission,
@@ -43,8 +39,6 @@ from nexau.archs.permissions.types import (
 from nexau.archs.session import SessionManager
 from nexau.archs.session.orm import InMemoryDatabaseEngine
 from nexau.archs.tool.tool import Tool
-from nexau.archs.tool.tool_registry import ToolRegistry
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -56,8 +50,11 @@ def _make_tool(
     impl: object = None,
     permissions: dict[str, list[str]] | None = None,
 ) -> Tool:
+    def _default_impl(**kwargs: object) -> dict[str, bool]:
+        return {"ok": True}
+
     if impl is None:
-        impl = lambda **kwargs: {"ok": True}
+        impl = _default_impl
     return Tool(
         name=name,
         description=f"Test tool: {name}",

@@ -947,13 +947,10 @@ class Executor:
                                     force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
                                     final_response = processed_response
                                     break
-                                nudge = Message(
-                                    role=Role.USER,
-                                    content=[TextBlock(text=(
-                                        "[System] You responded with text but did not call any tool. "
-                                        "If you are done, you MUST call `finish_team` with a summary. "
-                                        "If you need to do more work, call the appropriate tool."
-                                    ))],
+                                nudge = Message.user(
+                                    "[System] You responded with text but did not call any tool. "
+                                    "If you are done, you MUST call `finish_team` with a summary. "
+                                    "If you need to do more work, call the appropriate tool."
                                 )
                                 messages.append(nudge)
                                 iteration += 1
@@ -1512,13 +1509,10 @@ class Executor:
                         state.force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
                         state.final_response = processed_response
                         return _IterationOutcome.BREAK
-                    nudge = Message(
-                        role=Role.USER,
-                        content=[TextBlock(text=(
-                            "[System] You responded with text but did not call any tool. "
-                            "If you are done, you MUST call `finish_team` with a summary. "
-                            "If you need to do more work, call the appropriate tool."
-                        ))],
+                    nudge = Message.user(
+                        "[System] You responded with text but did not call any tool. "
+                        "If you are done, you MUST call `finish_team` with a summary. "
+                        "If you need to do more work, call the appropriate tool."
                     )
                     state.messages.append(nudge)
                     state.iteration += 1
@@ -1711,8 +1705,8 @@ class Executor:
 
             # ── Async tool: event loop 原生路径 ──
             tool_call_id = tc.tool_call_id or f"tool_call_{uuid.uuid4()}"
+            converted_params: dict[str, Any] = {}
             try:
-                converted_params: dict[str, Any] = {}
                 for pn, pv in tc.parameters.items():
                     converted_params[pn] = self.tool_executor.convert_parameter_type(tc.tool_name, pn, pv)
 
@@ -2365,10 +2359,10 @@ class Executor:
             return (tool_call.tool_name, error_msg, True)
 
         tool_call_id = tool_call.tool_call_id or f"tool_call_{uuid.uuid4()}"
+        converted_params: dict[str, Any] = {}
 
         try:
             # Convert parameters to correct types and execute
-            converted_params: dict[str, Any] = {}
             for param_name, param_value in tool_call.parameters.items():
                 converted_params[param_name] = self.tool_executor.convert_parameter_type(
                     tool_call.tool_name,

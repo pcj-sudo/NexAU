@@ -41,7 +41,6 @@ from nexau.archs.session.orm import InMemoryDatabaseEngine
 from nexau.archs.tool.tool import Tool
 from nexau.archs.tracer.adapters.langfuse import LangfuseTracer
 
-
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
@@ -210,7 +209,7 @@ class TestToolPermissionRealLLM:
 
         # ── Turn 3: Multi-tool trigger ──
         # Expected: lookup_data → allow, write_report → ask, delete_record → deny
-        r3 = await agent.run_async(
+        await agent.run_async(
             message=(
                 "Please do ALL of the following right now in one response:\n"
                 "1) Look up 'annual performance data'\n"
@@ -229,7 +228,7 @@ class TestToolPermissionRealLLM:
         if pending is None:
             # LLM didn't call write_report (non-deterministic) — retry with a
             # more direct prompt for write_report alone
-            r3b = await agent.run_async(
+            await agent.run_async(
                 message=(
                     "You still need to write a report. "
                     "Call write_report with title='Annual Review' and "
@@ -318,7 +317,7 @@ class TestToolPermissionRealLLM:
         )
 
         # ── First call: triggers ask ──
-        r1 = await agent.run_async(
+        await agent.run_async(
             message=(
                 "Write a report titled 'Test Report' with content 'Hello world'."
             ),

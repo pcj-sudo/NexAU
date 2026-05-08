@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import threading
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -41,7 +41,6 @@ from nexau.archs.main_sub.history_list import HistoryList
 from nexau.archs.permissions.types import PendingPermissionsError
 from nexau.archs.tool.tool import Tool
 from nexau.archs.tool.tool_registry import ToolRegistry
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -72,9 +71,13 @@ def _make_framework_context(tool_registry: ToolRegistry | None = None) -> Framew
     )
 
 
+def _default_impl(**kwargs: object) -> dict[str, bool]:
+    return {"ok": True}
+
+
 def _make_tool(name: str, impl: object = None) -> Tool:
     if impl is None:
-        impl = lambda **kwargs: {"ok": True}
+        impl = _default_impl
     return Tool(
         name=name,
         description=f"Test tool: {name}",
@@ -400,7 +403,6 @@ class TestResumePendingToolCalls:
 
         await agent._resume_pending_tool_calls(pending, agent_state, ctx)
 
-        from nexau.core.messages import Role
 
         assert len(agent.history) == 2
         results = {msg.content[0].tool_use_id: msg.content[0].is_error for msg in agent.history}
@@ -466,7 +468,6 @@ class TestResumePendingToolCalls:
 
         await agent._resume_pending_tool_calls(pending, agent_state, ctx)
 
-        from nexau.core.messages import Role
 
         assert len(agent.history) == 1
         assert agent.history[0].content[0].is_error is True

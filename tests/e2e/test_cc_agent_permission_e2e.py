@@ -16,17 +16,16 @@ from typing import Any
 import pytest
 from dotenv import load_dotenv
 
-load_dotenv()
-
 from nexau.archs.llm.llm_config import LLMConfig
 from nexau.archs.main_sub.agent import Agent
 from nexau.archs.main_sub.config import AgentConfig
-from nexau.archs.main_sub.framework_context import FrameworkContext
-from nexau.archs.permissions.types import AskPermission, PendingPermissionsError, PermissionDenied
+from nexau.archs.permissions.types import PendingPermissionsError
 from nexau.archs.sandbox.base_sandbox import LocalSandboxConfig
 from nexau.archs.session import SessionManager
 from nexau.archs.session.orm import InMemoryDatabaseEngine
 from nexau.archs.tool.tool import Tool
+
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Shared: load cc_agent tools from YAML + real bindings

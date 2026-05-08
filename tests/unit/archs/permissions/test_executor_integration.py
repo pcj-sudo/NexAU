@@ -131,6 +131,10 @@ def _make_tool_call(
     )
 
 
+def _default_impl(**kwargs: object) -> dict[str, bool]:
+    return {"ok": True}
+
+
 def _make_tool(
     name: str,
     impl: object = None,
@@ -138,7 +142,7 @@ def _make_tool(
 ) -> Tool:
     """Create a test Tool with an optional implementation and permissions."""
     if impl is None:
-        impl = lambda **kwargs: {"ok": True}
+        impl = _default_impl
     return Tool(
         name=name,
         description=f"Test tool: {name}",
