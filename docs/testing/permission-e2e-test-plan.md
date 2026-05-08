@@ -662,21 +662,14 @@ print(rules)  # 应包含用户 allow 过的命令
 
 ## 附录：测试脚本说明
 
-### `scripts/demo_cc_agent.py`（推荐）
+### `scripts/demo_cc_agent.py`
 
-CC 对齐 agent 的完整交互式测试脚本，使用 E2B 沙箱。
+CC 对齐 agent 的完整交互式测试脚本，支持本地或 E2B 沙箱。
 
 - 注册全部 19 个内置工具 YAML（含 run_code_tool、glob、multiedit_tool 等）
 - CC 对齐权限：只读自动放行，非只读全部 ask，无 hardcoded deny
-- 需要 E2B 环境变量：`E2B_API_URL`、`E2B_API_KEY`、`E2B_DOMAIN`
+- 本地模式（默认）：`uv run python scripts/demo_cc_agent.py`
+- E2B 模式：需设置 `E2B_API_URL`、`E2B_API_KEY`、`E2B_DOMAIN` 环境变量，加 `--e2b` 参数
 - Agent 定义：`examples/cc_agent/`
 - Langfuse trace name: `cc_agent_permission_test`
-
-### `scripts/demo_permission_full.py`
-
-本地工作区版测试脚本，不需要 E2B（工具较少，权限配置为旧版 hardcoded deny）。
-
-- 注册 10 个内置工具（不含 run_code_tool、glob、multiedit_tool 等）
-- 自动创建测试工作区 `/tmp/nexau_perm_test/workspace`
-- Langfuse trace name: `permission_full_test`
 
