@@ -253,6 +253,18 @@ class LangfuseTracer(BaseTracer):
         if not self.enabled or client is None:
             return span
 
+        # Pin per-span snapshots of mutable tracer state.
+        # LangfuseTracer.session_id / user_id / tags / metadata are shared
+        # fields overwritten by every Agent._setup_tracer call. end_span fires
+        # later (possibly after a different agent has been created), so reading
+        # self.xxx there returns the wrong owner's value. Snapshot now, read
+        # the snapshot at end_span — this is the fix for the cross-agent
+        # session_id leak.
+        span.attributes["_langfuse_pinned_session_id"] = self.session_id
+        span.attributes["_langfuse_pinned_user_id"] = self.user_id
+        span.attributes["_langfuse_pinned_tags"] = self.tags
+        span.attributes["_langfuse_pinned_metadata"] = self.metadata
+
         # Prepare common parameters
         langfuse_params: dict[str, Any] = {
             "name": name,
@@ -282,6 +294,13 @@ class LangfuseTracer(BaseTracer):
                     langfuse_params["trace_context"]["trace_id"] = self.trace_id
                 langfuse_span = client.start_span(**langfuse_params)
                 span.vendor_obj = langfuse_span
+                # Mark this span as the root of a fresh Langfuse trace so
+                # end_span knows to write the trace name. Without this flag
+                # end_span uses `span.parent_id is None` which disagrees with
+                # the create condition above when parent_span exists but its
+                # vendor_obj is None, producing nameless traces (see upstream
+                # issue #553).
+                span.attributes["_langfuse_is_trace_root"] = True
 
             elif span_type == SpanType.LLM:
                 # LLM call: Create a Generation
@@ -427,27 +446,33 @@ class LangfuseTracer(BaseTracer):
             # Trace-level fields are optional depending on the Langfuse SDK object type.
             # Keep this best-effort so missing methods (e.g., in tests/mocks) don't prevent `.end()`/flush.
             if hasattr(langfuse_span, "update_trace"):
-                # For root spans (no parent), update trace name, input, and output.
-                # This is defensive programming: when using trace_context.trace_id,
-                # Langfuse SDK creates a trace with empty name. We must explicitly
-                # call update_trace to ensure the trace has meaningful data.
-                # Without this, users who enable auto-instrumentation (FastAPI, httpx)
-                # may see unnamed traces in Langfuse UI.
-                if span.parent_id is None:
+                # For root spans, update trace name, input, and output.
+                # Use the `_langfuse_is_trace_root` flag pinned at start_span time
+                # instead of `span.parent_id is None`: the two must agree, and
+                # start_span is the only place that knows whether we actually
+                # created a new Langfuse trace (vs. attaching to an existing one).
+                if span.attributes.get("_langfuse_is_trace_root"):
                     trace_update: dict[str, Any] = {"name": span.name}
                     if span.inputs:
                         trace_update["input"] = self._serialize_for_langfuse(span.inputs)
                     if outputs is not None:
                         trace_update["output"] = self._serialize_for_langfuse(outputs)
                     langfuse_span.update_trace(**trace_update)
-                if self.metadata:
-                    langfuse_span.update_trace(metadata=self.metadata)
-                if self.user_id:
-                    langfuse_span.update_trace(user_id=self.user_id)
-                if self.session_id:
-                    langfuse_span.update_trace(session_id=self.session_id)
-                if self.tags:
-                    langfuse_span.update_trace(tags=self.tags)
+                # Read pinned session/user/tags/metadata captured at start_span
+                # time so a later mutation of `self.session_id` (e.g., a teammate
+                # being spawned) does not leak across into this span's trace.
+                pinned_metadata = span.attributes.get("_langfuse_pinned_metadata")
+                pinned_user_id = span.attributes.get("_langfuse_pinned_user_id")
+                pinned_session_id = span.attributes.get("_langfuse_pinned_session_id")
+                pinned_tags = span.attributes.get("_langfuse_pinned_tags")
+                if pinned_metadata:
+                    langfuse_span.update_trace(metadata=pinned_metadata)
+                if pinned_user_id:
+                    langfuse_span.update_trace(user_id=pinned_user_id)
+                if pinned_session_id:
+                    langfuse_span.update_trace(session_id=pinned_session_id)
+                if pinned_tags:
+                    langfuse_span.update_trace(tags=pinned_tags)
 
             # End the span (for timing)
             if hasattr(langfuse_span, "end"):
