@@ -639,8 +639,23 @@ class AgentTeam:
         Agent 的 executor 在 team_mode 下会持续循环等待消息，
         直到 force_stop() 被调用。
         """
+        # Trace 上下文隔离：teammate 协程从 leader 的 asyncio task 派生，
+        # 1) OTel 自己的 context 被 contextvars 复制带过来；
+        # 2) NexAU 在 tracer/context.py 里另起了一个 _current_span ContextVar，
+        #    TraceContext.__enter__ 会读它当 parent_span，导致 teammate 的
+        #    root span 被挂到 leader 的 agent span 下面，Langfuse 那边整个
+        #    team 共享同一棵 trace。
+        # 把两套 contextvar 都清空，teammate 的第一个 span 就成为新 root。
+        from opentelemetry import context as _otel_context
+
+        from nexau.archs.tracer.context import _current_span as _nexau_current_span
+
+        _otel_token = _otel_context.attach(_otel_context.Context())
+        _nexau_token = _nexau_current_span.set(None)
         agent = self._teammate_agents.get(agent_id)
         if agent is None:
+            _nexau_current_span.reset(_nexau_token)
+            _otel_context.detach(_otel_token)
             return
 
         # 更新 DB 状态为 running，清除 error 标记
@@ -675,6 +690,8 @@ class AgentTeam:
         finally:
             if self._watchdog is not None:
                 self._watchdog.unregister(agent_id)
+            _nexau_current_span.reset(_nexau_token)
+            _otel_context.detach(_otel_token)
 
     async def stop_all_teammates(self) -> None:
         """Force-stop all running teammates.
