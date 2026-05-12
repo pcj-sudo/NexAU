@@ -101,9 +101,37 @@ def _safe_deepcopy_config(config: AgentConfig) -> AgentConfig:
     # 4. 恢复原始 config 和拷贝后的 config
     for field, value in saved.items():
         setattr(config, field, value)
-        setattr(copied, field, value)
+        if field == "resolved_tracer" and value is not None:
+            # 每个 agent 独占一份 tracer 实例，避免 leader + N teammate 共享一份导致
+            # set_session_id 互相覆盖（langfuse 里 distinct session 数远少于 agent 数，
+            # 且因 self.session_id 在 spawn 链上被反复覆盖，老 agent 之后 start_span 时
+            # pin 到的也是新 agent 的 session_id）。
+            setattr(copied, field, _clone_tracer_for_agent(value))
+        else:
+            setattr(copied, field, value)
 
     return copied
+
+
+def _clone_tracer_for_agent(tracer: object) -> object:
+    """为新 agent 克隆一份独立 tracer 实例。
+
+    LangfuseTracer 把 session_id / user_id / tags / metadata 存在实例字段上，
+    `Agent._setup_tracer` 会通过 `tracer.set_session_id(...)` 直接 mutate 这些字段。
+    多个 agent 共享同一实例时，每次 spawn 都会覆盖前一个 agent 的 session_id，导致
+    所有老 agent 的后续 spans 都 pin 到错的 session_id。
+    解法：在 config clone 阶段同步 clone tracer instance；底层 langfuse client 由
+    `_ensure_client` 各自懒加载，每个 instance 独立持有 isolated OTel provider。
+    """
+    cloned = copy.copy(tracer)
+    # 重置懒加载 client 状态，强制 cloned tracer 第一次 start_span 时建自己的 client。
+    if hasattr(cloned, "client"):
+        cloned.client = None
+    if hasattr(cloned, "_client_identity"):
+        cloned._client_identity = None
+    if hasattr(cloned, "_missing_keys_warned"):
+        cloned._missing_keys_warned = False
+    return cloned
 
 
 class AgentTeam:
