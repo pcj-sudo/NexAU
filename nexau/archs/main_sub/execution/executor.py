@@ -283,6 +283,7 @@ class Executor:
         self._is_waiting_for_user = False  # True when idle due to ask_user stop tool
         self._last_stop_tool_name: str | None = None  # 最近触发 stop 的工具名
         self._has_active_teammates: Callable[[], bool] | None = None  # AgentTeam 注入，判断是否有活跃 teammate
+        self._is_team_leader: bool = False  # AgentTeam 注入，区分 leader 与 teammate 的 nudge 文案
 
     def _wire_middleware_event_emitters(self) -> None:
         """Wire internal middleware emitters to the unified event callback when available."""
@@ -383,6 +384,14 @@ class Executor:
     @has_active_teammates.setter
     def has_active_teammates(self, value: Callable[[], bool] | None) -> None:
         self._has_active_teammates = value
+
+    @property
+    def is_team_leader(self) -> bool:
+        return self._is_team_leader
+
+    @is_team_leader.setter
+    def is_team_leader(self, value: bool) -> None:
+        self._is_team_leader = value
 
     @property
     def tool_registry(self) -> ToolRegistry:
@@ -947,6 +956,36 @@ class Executor:
                             force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
                             final_response = stop_tool_result
                             break
+                        # team_mode 下若 LLM 仅输出 text 而未调用任何 tool（stop_tool_result is None），
+                        # 按角色注入 nudge 让其下一轮必须 tool call，再 continue 跑下一轮。
+                        # - leader 且无活跃 teammate：催调 finish_team
+                        # - 其余（worker/reviewer 等）：催向 leader 汇报完工并明确交接义务
+                        if stop_tool_result is None:
+                            has_teammates = (
+                                self._has_active_teammates() if self._has_active_teammates else False
+                            )
+                            if not has_teammates:
+                                if self._is_team_leader:
+                                    nudge_text = (
+                                        "[System] You responded with text but did not call any tool. "
+                                        "If you are done, you MUST call `finish_team` with a summary. "
+                                        "If you need to do more work, call the appropriate tool."
+                                    )
+                                else:
+                                    nudge_text = (
+                                        "[System] You responded with text but did not call any tool. "
+                                        "If your current work is complete, you MUST send a message to the leader "
+                                        "via the `message` or `notify_leader` tool. The message MUST explicitly say: "
+                                        "(1) you have completed your current work, "
+                                        "(2) you will not send any further messages, and "
+                                        "(3) the leader must verify that no other teammate will send messages either, "
+                                        "and if so MUST decide: assign new work to an existing teammate, "
+                                        "spawn a new teammate, or call `finish_team` if the overall task is fully done. "
+                                        "If you still have work to do, call the appropriate tool instead."
+                                    )
+                                messages.append(Message.user(nudge_text))
+                                iteration += 1
+                                continue
                         # RFC-0002: team_mode 下无限等待新消息，不设超时。
                         # Leader 需要等待 teammate 完成工作（可能远超 120s），
                         # watchdog 负责检测全员空闲并唤醒 leader。
@@ -1485,6 +1524,35 @@ class Executor:
                 state.force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
                 state.final_response = stop_tool_result
                 return _IterationOutcome.BREAK
+
+            # team_mode 下若 LLM 仅输出 text 而未调用任何 tool（stop_tool_result is None），
+            # 按角色注入 nudge 让其下一轮必须 tool call。文案与同步分支保持一致。
+            if stop_tool_result is None:
+                has_teammates = (
+                    self._has_active_teammates() if self._has_active_teammates else False
+                )
+                if not has_teammates:
+                    if self._is_team_leader:
+                        nudge_text = (
+                            "[System] You responded with text but did not call any tool. "
+                            "If you are done, you MUST call `finish_team` with a summary. "
+                            "If you need to do more work, call the appropriate tool."
+                        )
+                    else:
+                        nudge_text = (
+                            "[System] You responded with text but did not call any tool. "
+                            "If your current work is complete, you MUST send a message to the leader "
+                            "via the `message` or `notify_leader` tool. The message MUST explicitly say: "
+                            "(1) you have completed your current work, "
+                            "(2) you will not send any further messages, and "
+                            "(3) the leader must verify that no other teammate will send messages either, "
+                            "and if so MUST decide: assign new work to an existing teammate, "
+                            "spawn a new teammate, or call `finish_team` if the overall task is fully done. "
+                            "If you still have work to do, call the appropriate tool instead."
+                        )
+                    state.messages.append(Message.user(nudge_text))
+                    state.iteration += 1
+                    return _IterationOutcome.CONTINUE
 
             self._mark_waiting_for_user()
             if isinstance(state.origin_history, HistoryList):

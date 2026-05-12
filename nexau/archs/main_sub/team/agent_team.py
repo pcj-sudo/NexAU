@@ -1007,6 +1007,8 @@ class AgentTeam:
             # RFC-0002: 让 leader 的 executor 能查询活跃 teammate 数量，
             # 有活跃 teammate 时跳过 nudge，直接进入 _wait_for_messages。
             leader.executor.has_active_teammates = lambda: len(self._teammate_agents) > 0
+            # nudge 文案区分 leader 与 teammate：leader 催 finish_team，teammate 催向 leader 汇报。
+            leader.executor.is_team_leader = True
 
             # 5. 恢复之前 spawn 的 teammate（从 DB 读取，重建 Agent 并启动）
             await self._restore_teammates()
