@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import time
 from collections.abc import AsyncGenerator, Callable
 from concurrent.futures import Future
 from typing import TYPE_CHECKING
@@ -64,6 +65,13 @@ if TYPE_CHECKING:
     from nexau.archs.session.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
+
+# Event-driven all-idle safety net for catching agents stuck mid-tool/LLM.
+# `executor._is_idle` only flips True inside `_wait_for_messages`, so any
+# agent hung in stream/tool execution keeps `is_all_idle()` False forever
+# and the watchdog never fires. 120s of zero events from any agent is
+# treated as deadlock regardless of executor state.
+_EVENT_DRIVEN_IDLE_GAP_SECONDS: float = 120.0
 
 
 def _safe_deepcopy_config(config: AgentConfig) -> AgentConfig:
@@ -186,6 +194,12 @@ class AgentTeam:
 
         # SSE multiplexer (set in run() when on_event is provided)
         self._multiplexer: TeamSSEMultiplexer | None = None
+
+        # Event-driven all-idle tracking: monotonic ts of last event from any
+        # agent. None when no event handler has been wired yet (non-streaming
+        # mode), in which case is_all_idle() falls back to the old _is_idle
+        # flag check. See _EVENT_DRIVEN_IDLE_GAP_SECONDS.
+        self._last_event_ts: float | None = None
 
         # Run lifecycle tracking (for SSE reconnection support)
         self._is_running: bool = False
@@ -399,7 +413,7 @@ class AgentTeam:
         # 5a. 注入 SSE 事件中间件（若 multiplexer 已激活）
         if self._multiplexer is not None:
             handler = self._multiplexer.create_event_handler(agent_id=agent_id, role_name=role_name)
-            mw = AgentEventsMiddleware(session_id=agent_session_id, on_event=handler)
+            mw = AgentEventsMiddleware(session_id=agent_session_id, on_event=self._wrap_event_handler(handler))
             # 必须创建新列表，避免污染原始 candidate config 的 middlewares
             # （_safe_deepcopy_config 对不可 pickle 字段使用同一引用）
             config.middlewares = [*(config.middlewares or []), mw]
@@ -628,18 +642,52 @@ class AgentTeam:
             from_agent_id=from_agent_id,
         )
 
+    def _wrap_event_handler(self, handler: Callable[..., None]) -> Callable[..., None]:
+        """Wrap a multiplexer event handler with a team-level last-event timestamp tap.
+
+        Every event from any agent refreshes self._last_event_ts. is_all_idle()
+        uses this timestamp as a safety net for catching agents stuck mid-tool
+        or mid-LLM, where executor._is_idle stays False forever.
+
+        Also resets the watchdog's single-shot notification flag so a new
+        idle cycle after activity can fire again.
+        """
+        # 注：handler 创建即视为"事件追踪启用"。即便此后 0 个事件，从此刻起
+        # 120s 后无事件也会被判定为全员卡死——这正是我们要的语义。
+        self._last_event_ts = time.monotonic()
+
+        def wrapped(event: object) -> None:
+            self._last_event_ts = time.monotonic()
+            if self._watchdog is not None:
+                self._watchdog.reset_idle_notification()
+            handler(event)
+
+        return wrapped
+
     def is_all_idle(self) -> bool:
         """Check if all agents (leader + teammates) are idle.
 
         RFC-0002: 检测所有 agent 是否处于空闲状态
 
-        Returns True when leader and all teammates are in the executor's
-        team_mode wait loop. Used by watchdog for deadlock detection.
+        采用两层判定（OR 关系）：
 
-        Note: agents waiting for user response (ask_user) are excluded —
-        they are idle but not "stuck", so we should not wake the leader.
+        1. 事件驱动安全网（仅当 event tracking 启用时）：若任意 agent 在
+           过去 _EVENT_DRIVEN_IDLE_GAP_SECONDS 内都没 emit 过事件，判定为
+           全员卡死。覆盖 executor._is_idle 抓不到的"卡在 tool/LLM 中"
+           状态。代价：长 tool 执行（> 阈值）会误报，但 watchdog 给 leader
+           的提示是软的（review board / optionally finish_team），可接受。
+
+        2. 快速路径（原有逻辑）：所有 agent 的 executor 都坐在
+           `_wait_for_messages` 上。正常 idle 周期下 ~30s 内能命中。
+
+        ask_user 导致的 idle 仍然不算"卡死"——agent 在等用户回复。
         """
-        # 1. 检查 leader
+        # 1. 事件驱动安全网（仅当中间件已挂载、有事件流可观察时启用）
+        if self._last_event_ts is not None:
+            if (time.monotonic() - self._last_event_ts) > _EVENT_DRIVEN_IDLE_GAP_SECONDS:
+                return True
+
+        # 2. 快速路径：检查 leader
         if self._leader_agent is not None:
             if not self._leader_agent.executor.is_idle:
                 return False
@@ -649,7 +697,7 @@ class AgentTeam:
         else:
             return False  # leader 未启动，不算 all-idle
 
-        # 2. 检查所有 teammate
+        # 3. 快速路径：检查所有 teammate
         for agent in self._teammate_agents.values():
             if not agent.executor.is_idle:
                 return False
@@ -810,7 +858,7 @@ class AgentTeam:
             # 2. 注入 SSE 事件中间件（若 multiplexer 已激活）
             if self._multiplexer is not None:
                 handler = self._multiplexer.create_event_handler(agent_id=agent_id, role_name=role_name)
-                mw = AgentEventsMiddleware(session_id=agent_session_id, on_event=handler)
+                mw = AgentEventsMiddleware(session_id=agent_session_id, on_event=self._wrap_event_handler(handler))
                 # 必须创建新列表，避免污染原始 candidate config 的 middlewares
                 config.middlewares = [*(config.middlewares or []), mw]
                 if config.llm_config:
@@ -980,7 +1028,7 @@ class AgentTeam:
             leader_session_id = f"{self._team_session_id}:leader"
             if self._multiplexer is not None:
                 leader_handler = self._multiplexer.create_event_handler(agent_id=self._leader_agent_id, role_name="leader")
-                leader_mw = AgentEventsMiddleware(session_id=leader_session_id, on_event=leader_handler)
+                leader_mw = AgentEventsMiddleware(session_id=leader_session_id, on_event=self._wrap_event_handler(leader_handler))
                 # 必须创建新列表，避免污染原始 leader config 的 middlewares
                 leader_config.middlewares = [*(leader_config.middlewares or []), leader_mw]
                 if leader_config.llm_config:
