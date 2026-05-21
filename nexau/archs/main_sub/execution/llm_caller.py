@@ -155,6 +155,23 @@ class StreamIdleTimeoutError(Exception):
     """
 
 
+class EmptyLLMResponseError(RuntimeError):
+    """LLM returned no content and no tool calls — not a retryable failure.
+
+    Empty responses are deterministic for the current prompt state: the model
+    has examined the history and decided there is nothing to output (typically
+    because a teammate has finished its assigned work and should idle until the
+    leader sends it a new message). Retrying with the same input yields the
+    same empty output, so the retry loop in _call_with_retry / _call_with_retry_async
+    treats this exception specially and lets it propagate immediately, allowing
+    _run_teammate_forever to exit cleanly into the restart-on-next-message
+    flow (agent_team.py:606-614).
+
+    Inherits RuntimeError so any caller previously catching RuntimeError still
+    catches it (backwards compatible).
+    """
+
+
 def _get_stream_idle_timeout_seconds(llm_config: LLMConfig | None) -> float:
     """Return resolved stream idle timeout in seconds."""
     if llm_config is None:
@@ -615,7 +632,7 @@ class LLMCaller:
                 len(response_content.tool_calls),
                 response_content.usage.to_dict(),
             )
-            raise RuntimeError("No response content or tool calls from LLM")
+            raise EmptyLLMResponseError("No response content or tool calls from LLM")
 
     async def _call_once_async(
         self,
@@ -684,7 +701,7 @@ class LLMCaller:
                 len(response_content.tool_calls),
                 response_content.usage.to_dict(),
             )
-            raise RuntimeError("No response content or tool calls from LLM")
+            raise EmptyLLMResponseError("No response content or tool calls from LLM")
 
     def _call_with_retry(
         self,
@@ -771,8 +788,22 @@ class LLMCaller:
                     logger.error("❌ Empty model raw_message_meta=%s", raw_message_meta)
                     # Extract error details from raw response if available
                     error_detail = _extract_error_detail(response_content.raw_message)
-                    raise RuntimeError(f"No response content or tool calls{error_detail}")
+                    raise EmptyLLMResponseError(f"No response content or tool calls{error_detail}")
 
+            except EmptyLLMResponseError:
+                # Empty response is deterministic for the current prompt state
+                # (the model has decided it has nothing to output — typically a
+                # teammate that finished its work and should idle waiting for
+                # the leader). Retrying with the same input produces the same
+                # empty output, so propagate immediately and let
+                # _run_teammate_forever's restart-on-next-message flow handle
+                # it (agent_team.py:606-614).
+                logger.info(
+                    "↩ Empty LLM response (attempt %d/%d): bubbling up without retry — teammate will idle until next leader message",
+                    i + 1,
+                    self.retry_attempts,
+                )
+                raise
             except Exception as e:
                 # RFC-0001: shutdown_event 已设置时不重试，直接返回 None
                 # 让 execute() 在下一次迭代边界检测 stop_signal
@@ -963,6 +994,16 @@ class LLMCaller:
                 # Fallback: 无 async client 时仍走线程桥接
                 return await self._run_sync_in_llm_pool(self._call_once_sync, params)
 
+            except EmptyLLMResponseError:
+                # See _call_with_retry's matching handler — empty response is
+                # not retryable; bubble up so the teammate exits and waits for
+                # the next leader message to wake it up.
+                logger.info(
+                    "↩ Empty LLM response (attempt %d/%d, async): bubbling up without retry — teammate will idle until next leader message",
+                    i + 1,
+                    self.retry_attempts,
+                )
+                raise
             except Exception as e:
                 if params.shutdown_event and params.shutdown_event.is_set():
                     logger.info("🛑 LLM call interrupted by shutdown_event (async), skipping retry")
