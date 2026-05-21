@@ -94,6 +94,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# RFC-0002: team_mode 下 text-only 响应的兜底 nudge 文案前缀。
+# leader / worker 两个分支的文案都以这串开头，因此可以靠它在 messages 中
+# 反向定位「上一次 nudge」并实现「一个 idle cycle 只 nudge 一次」的语义。
+_TEAM_NUDGE_PREFIX = "[System] You responded with text but did not call any tool."
+
+
 class _IterationOutcome(Enum):
     """Signal returned by _execute_iteration_async to control the main loop.
 
@@ -431,6 +437,25 @@ class Executor:
         """Set waiting-for-user flag if the last stop tool was ask_user."""
         if self._last_stop_tool_name == "ask_user":
             self._is_waiting_for_user = True
+
+    def _nudge_already_used(self, messages: list[Message]) -> bool:
+        """Return True if the most recent user-role message is already a system nudge.
+
+        RFC-0002: 把 team_mode 下 text-only 的 nudge 限制为「每个 idle cycle 一次」。
+
+        判定逻辑（从尾向前找最近的一条 user-role 消息）：
+        - 是 ``_TEAM_NUDGE_PREFIX`` 开头的 system nudge → 已经催过一次了，
+          继续 text-only 就让它落到 ``_wait_for_messages`` 空转等 leader，
+          避免死亡螺旋反复逼出重复 ``message`` / ``finish_team`` 调用。
+        - 是真 leader / user 消息（不带前缀）→ 新指令到来，cycle 重置，
+          允许再 nudge 一次作为兜底。
+        - 找不到 user-role 消息 → 从未 nudge → 允许。
+        """
+        for msg in reversed(messages):
+            if msg.role != Role.USER:
+                continue
+            return msg.get_text_content().startswith(_TEAM_NUDGE_PREFIX)
+        return False
 
     @property
     def execution_done_event(self) -> threading.Event:
@@ -960,11 +985,13 @@ class Executor:
                         # 按角色注入 nudge 让其下一轮必须 tool call，再 continue 跑下一轮。
                         # - leader 且无活跃 teammate：催调 finish_team
                         # - 其余（worker/reviewer 等）：催向 leader 汇报完工并明确交接义务
+                        # 同一 idle cycle 内只 nudge 一次（见 _nudge_already_used），
+                        # 避免 text-only ↔ nudge 死亡螺旋反复逼出重复 tool call。
                         if stop_tool_result is None:
                             has_teammates = (
                                 self._has_active_teammates() if self._has_active_teammates else False
                             )
-                            if not has_teammates:
+                            if not has_teammates and not self._nudge_already_used(messages):
                                 if self._is_team_leader:
                                     nudge_text = (
                                         "[System] You responded with text but did not call any tool. "
@@ -974,14 +1001,15 @@ class Executor:
                                 else:
                                     nudge_text = (
                                         "[System] You responded with text but did not call any tool. "
-                                        "If your current work is complete, you MUST send a message to the leader "
-                                        "via the `message` or `notify_leader` tool. The message MUST explicitly say: "
-                                        "(1) you have completed your current work, "
-                                        "(2) you will not send any further messages, and "
-                                        "(3) the leader must verify that no other teammate will send messages either, "
-                                        "and if so MUST decide: assign new work to an existing teammate, "
-                                        "spawn a new teammate, or call `finish_team` if the overall task is fully done. "
-                                        "If you still have work to do, call the appropriate tool instead."
+                                        "You are a teammate, not the leader: you cannot end the team run, and no "
+                                        "tool for ending it is available to you, so do not try to invoke one. "
+                                        "If your current work is complete, your only remaining action is to call "
+                                        "the `message` or `notify_leader` tool once to tell the leader (1) your "
+                                        "current work is complete and (2) you will send no further messages, so "
+                                        "the leader can decide the next step. After that single report, reply "
+                                        "with plain text only and wait; the framework will park you until the "
+                                        "leader sends new instructions. If you still have work to do, call the "
+                                        "appropriate tool to continue it instead."
                                     )
                                 messages.append(Message.user(nudge_text))
                                 iteration += 1
@@ -1527,11 +1555,12 @@ class Executor:
 
             # team_mode 下若 LLM 仅输出 text 而未调用任何 tool（stop_tool_result is None），
             # 按角色注入 nudge 让其下一轮必须 tool call。文案与同步分支保持一致。
+            # 同一 idle cycle 内只 nudge 一次（见 _nudge_already_used）。
             if stop_tool_result is None:
                 has_teammates = (
                     self._has_active_teammates() if self._has_active_teammates else False
                 )
-                if not has_teammates:
+                if not has_teammates and not self._nudge_already_used(state.messages):
                     if self._is_team_leader:
                         nudge_text = (
                             "[System] You responded with text but did not call any tool. "
@@ -1541,14 +1570,15 @@ class Executor:
                     else:
                         nudge_text = (
                             "[System] You responded with text but did not call any tool. "
-                            "If your current work is complete, you MUST send a message to the leader "
-                            "via the `message` or `notify_leader` tool. The message MUST explicitly say: "
-                            "(1) you have completed your current work, "
-                            "(2) you will not send any further messages, and "
-                            "(3) the leader must verify that no other teammate will send messages either, "
-                            "and if so MUST decide: assign new work to an existing teammate, "
-                            "spawn a new teammate, or call `finish_team` if the overall task is fully done. "
-                            "If you still have work to do, call the appropriate tool instead."
+                            "You are a teammate, not the leader: you cannot end the team run, and no "
+                            "tool for ending it is available to you, so do not try to invoke one. "
+                            "If your current work is complete, your only remaining action is to call "
+                            "the `message` or `notify_leader` tool once to tell the leader (1) your "
+                            "current work is complete and (2) you will send no further messages, so "
+                            "the leader can decide the next step. After that single report, reply "
+                            "with plain text only and wait; the framework will park you until the "
+                            "leader sends new instructions. If you still have work to do, call the "
+                            "appropriate tool to continue it instead."
                         )
                     state.messages.append(Message.user(nudge_text))
                     state.iteration += 1
