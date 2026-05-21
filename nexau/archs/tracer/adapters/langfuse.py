@@ -302,6 +302,33 @@ class LangfuseTracer(BaseTracer):
                 # issue #553).
                 span.attributes["_langfuse_is_trace_root"] = True
 
+                # Eagerly write trace-level fields while the OTel span is
+                # guaranteed recording. langfuse SDK's update_trace() at
+                # _client/span.py:240 short-circuits with `if not
+                # self._otel_span.is_recording(): return self` — once the
+                # underlying OTel span stops recording (batch export, race on
+                # parallel teammate startup, NoOpSpan fallback), every
+                # subsequent update_trace call is silently dropped. Doing it
+                # here closes the window between start and end (which can be
+                # tens of minutes for long-running teammate agents).
+                eager_trace_update: dict[str, Any] = {"name": name}
+                if self.session_id:
+                    eager_trace_update["session_id"] = self.session_id
+                if self.user_id:
+                    eager_trace_update["user_id"] = self.user_id
+                if self.tags:
+                    eager_trace_update["tags"] = self.tags
+                if self.metadata:
+                    eager_trace_update["metadata"] = self.metadata
+                if inputs:
+                    eager_trace_update["input"] = self._serialize_for_langfuse(inputs)
+                try:
+                    langfuse_span.update_trace(**eager_trace_update)
+                except Exception as e:
+                    logger.warning(
+                        f"Eager update_trace failed for root span '{name}': {e}"
+                    )
+
             elif span_type == SpanType.LLM:
                 # LLM call: Create a Generation
                 parent_obj = cast(LangfuseSpan, parent_span.vendor_obj)
