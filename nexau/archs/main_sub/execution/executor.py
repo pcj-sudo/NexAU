@@ -420,7 +420,7 @@ class Executor:
     def is_idle(self) -> bool:
         """Check if executor is idle (waiting for messages in team_mode).
 
-        RFC-0002: 用于全员空闲检测。
+        RFC-0002: 供 AgentTeam 判断 teammate 是否已停在 _wait_for_messages 上。
         """
         return self._is_idle
 
@@ -428,8 +428,7 @@ class Executor:
     def is_waiting_for_user(self) -> bool:
         """Check if executor is idle because it's waiting for user response (ask_user).
 
-        RFC-0002: 区分 ask_user 导致的 idle 与普通 idle，
-        避免 watchdog 误报全员空闲。
+        RFC-0002: 区分 ask_user 导致的 idle 与普通 idle。
         """
         return self._is_waiting_for_user
 
@@ -1015,9 +1014,8 @@ class Executor:
                                 iteration += 1
                                 continue
                         # RFC-0002: team_mode 下无限等待新消息，不设超时。
-                        # Leader 需要等待 teammate 完成工作（可能远超 120s），
-                        # watchdog 负责检测全员空闲并唤醒 leader。
-                        # 标记 ask_user 导致的 idle，避免 watchdog 误报全员空闲
+                        # Leader 需要等待 teammate 完成工作。
+                        # 标记 ask_user 导致的 idle（区分于普通 idle）。
                         self._mark_waiting_for_user()
                         # Sync messages back to HistoryList before blocking wait
                         if isinstance(_origin_history, HistoryList):

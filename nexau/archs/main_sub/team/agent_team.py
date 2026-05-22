@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
-import time
 from collections.abc import AsyncGenerator, Callable
 from concurrent.futures import Future
 from typing import TYPE_CHECKING
@@ -41,7 +40,6 @@ from nexau.archs.main_sub.team.state import AgentTeamState
 from nexau.archs.main_sub.team.task_board import TaskBoard
 from nexau.archs.main_sub.team.tools import get_leader_tools, get_teammate_tools
 from nexau.archs.main_sub.team.types import MaxTeammatesError, TeammateInfo
-from nexau.archs.main_sub.team.watchdog import TeammateWatchdog, WatchdogConfig
 from nexau.archs.sandbox import (
     BaseSandbox,
     BaseSandboxManager,
@@ -65,13 +63,6 @@ if TYPE_CHECKING:
     from nexau.archs.session.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
-
-# Event-driven all-idle safety net for catching agents stuck mid-tool/LLM.
-# `executor._is_idle` only flips True inside `_wait_for_messages`, so any
-# agent hung in stream/tool execution keeps `is_all_idle()` False forever
-# and the watchdog never fires. 120s of zero events from any agent is
-# treated as deadlock regardless of executor state.
-_EVENT_DRIVEN_IDLE_GAP_SECONDS: float = 120.0
 
 
 def _safe_deepcopy_config(config: AgentConfig) -> AgentConfig:
@@ -175,7 +166,6 @@ class AgentTeam:
         self._leader_agent_id: str = ""
         self._task_board: TaskBoard | None = None
         self._message_bus: TeamMessageBus | None = None
-        self._watchdog: TeammateWatchdog | None = None
 
         # Shared sandbox manager for all agents in the team
         self._shared_sandbox_manager: BaseSandboxManager[BaseSandbox] | None = None
@@ -194,12 +184,6 @@ class AgentTeam:
 
         # SSE multiplexer (set in run() when on_event is provided)
         self._multiplexer: TeamSSEMultiplexer | None = None
-
-        # Event-driven all-idle tracking: monotonic ts of last event from any
-        # agent. None when no event handler has been wired yet (non-streaming
-        # mode), in which case is_all_idle() falls back to the old _is_idle
-        # flag check. See _EVENT_DRIVEN_IDLE_GAP_SECONDS.
-        self._last_event_ts: float | None = None
 
         # Run lifecycle tracking (for SSE reconnection support)
         self._is_running: bool = False
@@ -253,7 +237,7 @@ class AgentTeam:
         Steps:
         1. Setup database models
         2. Create or restore team record
-        3. Create shared services (TaskBoard, MessageBus, Watchdog)
+        3. Create shared services (TaskBoard, MessageBus)
         4. Restore existing teammate counters
 
         Idempotent: safe to call multiple times.
@@ -320,11 +304,6 @@ class AgentTeam:
         self._message_bus.set_agent_delivery(
             deliver_message=self.send_message_to_agent,
             get_broadcast_recipients=lambda: [info.agent_id for info in self.get_teammate_info()],
-        )
-        self._watchdog = TeammateWatchdog(
-            config=WatchdogConfig(),
-            check_all_idle=self.is_all_idle,
-            notify_leader=self.notify_leader,
         )
 
         # 4. 恢复已有 teammate 计数器
@@ -413,7 +392,7 @@ class AgentTeam:
         # 5a. 注入 SSE 事件中间件（若 multiplexer 已激活）
         if self._multiplexer is not None:
             handler = self._multiplexer.create_event_handler(agent_id=agent_id, role_name=role_name)
-            mw = AgentEventsMiddleware(session_id=agent_session_id, on_event=self._wrap_event_handler(handler))
+            mw = AgentEventsMiddleware(session_id=agent_session_id, on_event=handler)
             # 必须创建新列表，避免污染原始 candidate config 的 middlewares
             # （_safe_deepcopy_config 对不可 pickle 字段使用同一引用）
             config.middlewares = [*(config.middlewares or []), mw]
@@ -494,10 +473,6 @@ class AgentTeam:
         if member is not None:
             member.status = "stopped"
             await self._engine.update(member)
-
-        # 4. 从 watchdog 注销
-        if self._watchdog is not None:
-            self._watchdog.unregister(agent_id)
 
         logger.info(f"Removed teammate: {agent_id}")
 
@@ -589,10 +564,6 @@ class AgentTeam:
         enqueue_text = f"[Team Message from {from_agent_id}]: {content}"
         msg = {"role": "user", "content": enqueue_text}
 
-        # 0. 非 watchdog 消息重置空闲通知标记，允许下次全员空闲时再次唤醒 leader
-        if from_agent_id != "watchdog" and self._watchdog is not None:
-            self._watchdog.reset_idle_notification()
-
         # 1. 通过 SSE 通知前端
         if self._multiplexer is not None:
             self._multiplexer.emit(
@@ -642,71 +613,6 @@ class AgentTeam:
             from_agent_id=from_agent_id,
         )
 
-    def _wrap_event_handler(self, handler: Callable[..., None]) -> Callable[..., None]:
-        """Wrap a multiplexer event handler with a team-level last-event timestamp tap.
-
-        Every event from any agent refreshes self._last_event_ts. is_all_idle()
-        uses this timestamp as a safety net for catching agents stuck mid-tool
-        or mid-LLM, where executor._is_idle stays False forever.
-
-        Also resets the watchdog's single-shot notification flag so a new
-        idle cycle after activity can fire again.
-        """
-        # 注：handler 创建即视为"事件追踪启用"。即便此后 0 个事件，从此刻起
-        # 120s 后无事件也会被判定为全员卡死——这正是我们要的语义。
-        self._last_event_ts = time.monotonic()
-
-        def wrapped(event: object) -> None:
-            self._last_event_ts = time.monotonic()
-            if self._watchdog is not None:
-                self._watchdog.reset_idle_notification()
-            handler(event)
-
-        return wrapped
-
-    def is_all_idle(self) -> bool:
-        """Check if all agents (leader + teammates) are idle.
-
-        RFC-0002: 检测所有 agent 是否处于空闲状态
-
-        采用两层判定（OR 关系）：
-
-        1. 事件驱动安全网（仅当 event tracking 启用时）：若任意 agent 在
-           过去 _EVENT_DRIVEN_IDLE_GAP_SECONDS 内都没 emit 过事件，判定为
-           全员卡死。覆盖 executor._is_idle 抓不到的"卡在 tool/LLM 中"
-           状态。代价：长 tool 执行（> 阈值）会误报，但 watchdog 给 leader
-           的提示是软的（review board / optionally finish_team），可接受。
-
-        2. 快速路径（原有逻辑）：所有 agent 的 executor 都坐在
-           `_wait_for_messages` 上。正常 idle 周期下 ~30s 内能命中。
-
-        ask_user 导致的 idle 仍然不算"卡死"——agent 在等用户回复。
-        """
-        # 1. 事件驱动安全网（仅当中间件已挂载、有事件流可观察时启用）
-        if self._last_event_ts is not None:
-            if (time.monotonic() - self._last_event_ts) > _EVENT_DRIVEN_IDLE_GAP_SECONDS:
-                return True
-
-        # 2. 快速路径：检查 leader
-        if self._leader_agent is not None:
-            if not self._leader_agent.executor.is_idle:
-                return False
-            # leader 等待用户回复时也不算全员空闲
-            if self._leader_agent.executor.is_waiting_for_user:
-                return False
-        else:
-            return False  # leader 未启动，不算 all-idle
-
-        # 3. 快速路径：检查所有 teammate
-        for agent in self._teammate_agents.values():
-            if not agent.executor.is_idle:
-                return False
-            # ask_user 导致的 idle 不算真正空闲，agent 在等待用户回复
-            if agent.executor.is_waiting_for_user:
-                return False
-
-        return True
-
     async def _run_teammate_forever(self, agent_id: str) -> None:
         """Run teammate in forever-run mode. Exits only on force_stop.
 
@@ -738,10 +644,6 @@ class AgentTeam:
         await self._update_member_status(agent_id, "running")
         self._errored_agents.discard(agent_id)
 
-        # 注册 watchdog
-        if self._watchdog is not None:
-            self._watchdog.register(agent_id)
-
         try:
             # RFC-0002: 不发送激活消息，teammate 启动后直接进入 idle 等待
             await agent.run_async(message=[], variables=self._variables)
@@ -764,8 +666,6 @@ class AgentTeam:
             # 2. 更新 DB 状态为 error（区别于正常 idle）
             await self._update_member_status(agent_id, "error")
         finally:
-            if self._watchdog is not None:
-                self._watchdog.unregister(agent_id)
             _nexau_current_span.reset(_nexau_token)
             _otel_context.detach(_otel_token)
 
@@ -858,7 +758,7 @@ class AgentTeam:
             # 2. 注入 SSE 事件中间件（若 multiplexer 已激活）
             if self._multiplexer is not None:
                 handler = self._multiplexer.create_event_handler(agent_id=agent_id, role_name=role_name)
-                mw = AgentEventsMiddleware(session_id=agent_session_id, on_event=self._wrap_event_handler(handler))
+                mw = AgentEventsMiddleware(session_id=agent_session_id, on_event=handler)
                 # 必须创建新列表，避免污染原始 candidate config 的 middlewares
                 config.middlewares = [*(config.middlewares or []), mw]
                 if config.llm_config:
@@ -918,10 +818,6 @@ class AgentTeam:
             session_id=leader_session_id,
             agent_id=self._leader_agent_id,
         )
-
-        # 4. 停止 watchdog
-        if self._watchdog is not None:
-            self._watchdog.stop()
 
     async def _update_member_status(self, agent_id: str, status: str) -> None:
         """Update teammate member status in DB.
@@ -991,11 +887,6 @@ class AgentTeam:
         if variables is not None:
             self._variables = variables
 
-        # 1. 启动 watchdog
-        watchdog_task: asyncio.Task[None] | None = None
-        if self._watchdog is not None:
-            watchdog_task = asyncio.create_task(self._watchdog.run())
-
         try:
             # 2. 注入 candidate 信息到 leader system prompt（deepcopy 避免污染原始 config）
             leader_config = _safe_deepcopy_config(self._leader_config)
@@ -1028,7 +919,7 @@ class AgentTeam:
             leader_session_id = f"{self._team_session_id}:leader"
             if self._multiplexer is not None:
                 leader_handler = self._multiplexer.create_event_handler(agent_id=self._leader_agent_id, role_name="leader")
-                leader_mw = AgentEventsMiddleware(session_id=leader_session_id, on_event=self._wrap_event_handler(leader_handler))
+                leader_mw = AgentEventsMiddleware(session_id=leader_session_id, on_event=leader_handler)
                 # 必须创建新列表，避免污染原始 leader config 的 middlewares
                 leader_config.middlewares = [*(leader_config.middlewares or []), leader_mw]
                 if leader_config.llm_config:
@@ -1103,14 +994,6 @@ class AgentTeam:
 
             return result
         finally:
-            # 8. 立即停止 watchdog，避免在 teammate 清理期间发送无效消息
-            if watchdog_task is not None:
-                watchdog_task.cancel()
-                try:
-                    await watchdog_task
-                except asyncio.CancelledError:
-                    pass
-
             # 9. Leader 结束后，强制停止所有 teammate
             await self.stop_all_teammates()
 

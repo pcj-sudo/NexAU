@@ -331,43 +331,6 @@ class TestAgentTeamGetTeammateInfo:
         assert len(infos) == 3
 
 
-# --- TestAgentTeamIsAllIdle ---
-
-
-class TestAgentTeamIsAllIdle:
-    def test_false_when_leader_not_set(self):
-        team = make_team()
-        assert team.is_all_idle() is False
-
-    def test_false_when_leader_not_idle(self):
-        team = make_team()
-        leader = make_mock_agent(is_idle=False)
-        team._leader_agent = leader
-        assert team.is_all_idle() is False
-
-    def test_true_when_leader_idle_no_teammates(self):
-        team = make_team()
-        leader = make_mock_agent(is_idle=True)
-        team._leader_agent = leader
-        assert team.is_all_idle() is True
-
-    def test_false_when_teammate_not_idle(self):
-        team = make_team()
-        leader = make_mock_agent(is_idle=True)
-        team._leader_agent = leader
-        teammate = make_mock_agent(is_idle=False)
-        team._teammate_agents["worker-1"] = teammate
-        assert team.is_all_idle() is False
-
-    def test_true_when_all_idle(self):
-        team = make_team()
-        leader = make_mock_agent(is_idle=True)
-        team._leader_agent = leader
-        for i in range(3):
-            team._teammate_agents[f"worker-{i}"] = make_mock_agent(is_idle=True)
-        assert team.is_all_idle() is True
-
-
 # --- TestAgentTeamNotifyLeader ---
 
 
@@ -579,28 +542,6 @@ class TestAgentTeamRemoveTeammate:
 
             # Should not raise even if agent doesn't exist
             await team.remove_teammate("ghost-1")
-
-        asyncio.run(run())
-
-    def test_remove_unregisters_from_watchdog(self):
-        async def run():
-            engine = InMemoryDatabaseEngine()
-            await engine.setup_models(ALL_TEAM_MODELS)
-            team = make_team(engine=engine)
-            await team.initialize()
-
-            watchdog = MagicMock()
-            team._watchdog = watchdog
-
-            agent = make_mock_agent(name="worker")
-            future: Future[None] = Future()
-            future.set_result(None)
-            team._teammate_agents["worker-1"] = agent
-            team._teammate_futures["worker-1"] = future
-
-            await team.remove_teammate("worker-1")
-
-            watchdog.unregister.assert_called_once_with("worker-1")
 
         asyncio.run(run())
 
@@ -1048,69 +989,6 @@ class TestAgentTeamRunTeammateForever:
 
         asyncio.run(run())
 
-    def test_registers_and_unregisters_watchdog(self):
-        async def run():
-            engine = InMemoryDatabaseEngine()
-            await engine.setup_models(ALL_TEAM_MODELS)
-            team = make_team(engine=engine)
-            await team.initialize()
-
-            member = TeamMemberModel(
-                user_id="u1",
-                session_id="s1",
-                team_id=team.team_id,
-                agent_id="worker-1",
-                member_session_id="s1:worker-1",
-                role_name="worker",
-                status="idle",
-            )
-            await engine.create(member)
-
-            agent = make_mock_agent(name="worker")
-            agent.run_async = AsyncMock(return_value="done")
-            team._teammate_agents["worker-1"] = agent
-
-            watchdog = MagicMock()
-            team._watchdog = watchdog
-
-            await team._run_teammate_forever("worker-1")
-
-            watchdog.register.assert_called_once_with("worker-1")
-            watchdog.unregister.assert_called_once_with("worker-1")
-
-        asyncio.run(run())
-
-    def test_unregisters_watchdog_on_error(self):
-        async def run():
-            engine = InMemoryDatabaseEngine()
-            await engine.setup_models(ALL_TEAM_MODELS)
-            team = make_team(engine=engine)
-            await team.initialize()
-
-            member = TeamMemberModel(
-                user_id="u1",
-                session_id="s1",
-                team_id=team.team_id,
-                agent_id="worker-1",
-                member_session_id="s1:worker-1",
-                role_name="worker",
-                status="running",
-            )
-            await engine.create(member)
-
-            agent = make_mock_agent(name="worker")
-            agent.run_async = AsyncMock(side_effect=RuntimeError("crash"))
-            team._teammate_agents["worker-1"] = agent
-
-            watchdog = MagicMock()
-            team._watchdog = watchdog
-
-            await team._run_teammate_forever("worker-1")
-
-            watchdog.unregister.assert_called_once_with("worker-1")
-
-        asyncio.run(run())
-
 
 class TestAgentTeamRunStreaming:
     def test_run_streaming_yields_emitted_envelopes(self):
@@ -1228,18 +1106,6 @@ class TestAgentTeamStopAll:
             await team.stop_all()
 
             leader.executor.force_stop.assert_called_once()
-
-        asyncio.run(run())
-
-    def test_stop_all_stops_watchdog(self):
-        async def run():
-            team = make_team()
-            watchdog = MagicMock()
-            team._watchdog = watchdog
-
-            await team.stop_all()
-
-            watchdog.stop.assert_called_once()
 
         asyncio.run(run())
 

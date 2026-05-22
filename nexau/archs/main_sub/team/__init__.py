@@ -45,8 +45,6 @@ if TYPE_CHECKING:
     from .message_bus import TeamMessageBus as TeamMessageBus
     from .state import AgentTeamState as AgentTeamState
     from .task_board import TaskBoard as TaskBoard
-    from .watchdog import TeammateWatchdog as TeammateWatchdog
-    from .watchdog import WatchdogConfig as WatchdogConfig
 
 __all__ = [
     "AgentTeam",
@@ -64,10 +62,8 @@ __all__ = [
     "TaskInfo",
     "TeamMessageBus",
     "TeammateInfo",
-    "TeammateWatchdog",
     "ToolError",
     "UpdateTaskStatusResult",
-    "WatchdogConfig",
 ]
 
 
@@ -93,12 +89,4 @@ def __getattr__(name: str) -> object:
         from .message_bus import TeamMessageBus
 
         return TeamMessageBus
-    if name == "TeammateWatchdog":
-        from .watchdog import TeammateWatchdog
-
-        return TeammateWatchdog
-    if name == "WatchdogConfig":
-        from .watchdog import WatchdogConfig
-
-        return WatchdogConfig
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
