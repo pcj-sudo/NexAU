@@ -632,6 +632,12 @@ class LLMCaller:
                 len(response_content.tool_calls),
                 response_content.usage.to_dict(),
             )
+            # 🔬 BUG-PROBE: 确认 raise 端的 class identity
+            logger.error(
+                "🔬 [PROBE-RAISE-SYNC] _call_once_sync raising EmptyLLMResponseError: class_id=%s class_module=%s",
+                id(EmptyLLMResponseError),
+                EmptyLLMResponseError.__module__,
+            )
             raise EmptyLLMResponseError("No response content or tool calls from LLM")
 
     async def _call_once_async(
@@ -700,6 +706,12 @@ class LLMCaller:
                 len(response_content.content or ""),
                 len(response_content.tool_calls),
                 response_content.usage.to_dict(),
+            )
+            # 🔬 BUG-PROBE: 确认 raise 端的 class identity
+            logger.error(
+                "🔬 [PROBE-RAISE-ASYNC] _call_once_async raising EmptyLLMResponseError: class_id=%s class_module=%s",
+                id(EmptyLLMResponseError),
+                EmptyLLMResponseError.__module__,
             )
             raise EmptyLLMResponseError("No response content or tool calls from LLM")
 
@@ -790,7 +802,21 @@ class LLMCaller:
                     error_detail = _extract_error_detail(response_content.raw_message)
                     raise EmptyLLMResponseError(f"No response content or tool calls{error_detail}")
 
-            except EmptyLLMResponseError:
+            except EmptyLLMResponseError as e:
+                # 🔬 BUG-PROBE: 确认 EmptyLLMResponseError handler 真的被命中
+                logger.error(
+                    "🔬 [PROBE-SYNC] EMPTY handler HIT attempt=%d exc_type=%s "
+                    "exc_class_id=%s catch_class_id=%s exc_module=%s "
+                    "catch_module=%s isinstance=%s str=%r",
+                    i + 1,
+                    type(e).__name__,
+                    id(type(e)),
+                    id(EmptyLLMResponseError),
+                    type(e).__module__,
+                    EmptyLLMResponseError.__module__,
+                    isinstance(e, EmptyLLMResponseError),
+                    str(e),
+                )
                 # Empty response is deterministic for the current prompt state
                 # (the model has decided it has nothing to output — typically a
                 # teammate that finished its work and should idle waiting for
@@ -805,6 +831,22 @@ class LLMCaller:
                 )
                 raise
             except Exception as e:
+                # 🔬 BUG-PROBE: 如果 generic handler 抓到带 "No response content" 的异常 → 那就是 bug
+                if "No response content or tool calls" in str(e):
+                    logger.error(
+                        "🔬 [PROBE-SYNC] GENERIC handler caught EMPTY-LIKE message (BUG!) "
+                        "attempt=%d exc_type=%s exc_class_id=%s catch_class_id=%s "
+                        "exc_module=%s catch_module=%s mro=%s isinstance_EmptyLLM=%s str=%r",
+                        i + 1,
+                        type(e).__name__,
+                        id(type(e)),
+                        id(EmptyLLMResponseError),
+                        type(e).__module__,
+                        EmptyLLMResponseError.__module__,
+                        [c.__name__ for c in type(e).__mro__],
+                        isinstance(e, EmptyLLMResponseError),
+                        str(e),
+                    )
                 # RFC-0001: shutdown_event 已设置时不重试，直接返回 None
                 # 让 execute() 在下一次迭代边界检测 stop_signal
                 if params.shutdown_event and params.shutdown_event.is_set():
@@ -994,7 +1036,21 @@ class LLMCaller:
                 # Fallback: 无 async client 时仍走线程桥接
                 return await self._run_sync_in_llm_pool(self._call_once_sync, params)
 
-            except EmptyLLMResponseError:
+            except EmptyLLMResponseError as e:
+                # 🔬 BUG-PROBE: 确认 EmptyLLMResponseError handler 真的被命中
+                logger.error(
+                    "🔬 [PROBE-ASYNC] EMPTY handler HIT attempt=%d exc_type=%s "
+                    "exc_class_id=%s catch_class_id=%s exc_module=%s "
+                    "catch_module=%s isinstance=%s str=%r",
+                    i + 1,
+                    type(e).__name__,
+                    id(type(e)),
+                    id(EmptyLLMResponseError),
+                    type(e).__module__,
+                    EmptyLLMResponseError.__module__,
+                    isinstance(e, EmptyLLMResponseError),
+                    str(e),
+                )
                 # See _call_with_retry's matching handler — empty response is
                 # not retryable; bubble up so the teammate exits and waits for
                 # the next leader message to wake it up.
@@ -1005,6 +1061,22 @@ class LLMCaller:
                 )
                 raise
             except Exception as e:
+                # 🔬 BUG-PROBE: 如果 generic handler 抓到带 "No response content" 的异常 → 那就是 bug
+                if "No response content or tool calls" in str(e):
+                    logger.error(
+                        "🔬 [PROBE-ASYNC] GENERIC handler caught EMPTY-LIKE message (BUG!) "
+                        "attempt=%d exc_type=%s exc_class_id=%s catch_class_id=%s "
+                        "exc_module=%s catch_module=%s mro=%s isinstance_EmptyLLM=%s str=%r",
+                        i + 1,
+                        type(e).__name__,
+                        id(type(e)),
+                        id(EmptyLLMResponseError),
+                        type(e).__module__,
+                        EmptyLLMResponseError.__module__,
+                        [c.__name__ for c in type(e).__mro__],
+                        isinstance(e, EmptyLLMResponseError),
+                        str(e),
+                    )
                 if params.shutdown_event and params.shutdown_event.is_set():
                     logger.info("🛑 LLM call interrupted by shutdown_event (async), skipping retry")
                     return None
