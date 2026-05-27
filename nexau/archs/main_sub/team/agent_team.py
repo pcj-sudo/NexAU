@@ -973,7 +973,14 @@ class AgentTeam:
 
             # RFC-0002: 让 leader 的 executor 能查询活跃 teammate 数量，
             # 有活跃 teammate 时跳过 nudge，直接进入 _wait_for_messages。
-            leader.executor.has_active_teammates = lambda: len(self._teammate_agents) > 0
+            # 注意「活跃」= teammate 当前没在 _wait_for_messages 里 park（即 _is_idle == False）；
+            # 不能用 len(self._teammate_agents) > 0，因为 worker finish-hand 回 leader 后仍留在
+            # dict 里 park 等 leader 派活，dict 长度判定会让 nudge 永远不触发，leader text-only
+            # stop（"我做完了"摘要但没调 finish_team）就只能靠 harbor wall 兜底——见
+            # longcli_3h_team0526_2 跑出 14/15 AgentTimeoutError 的诊断。
+            leader.executor.has_active_teammates = lambda: any(
+                not t.executor.is_idle for t in self._teammate_agents.values()
+            )
             # nudge 文案区分 leader 与 teammate：leader 催 finish_team，teammate 催向 leader 汇报。
             leader.executor.is_team_leader = True
 
